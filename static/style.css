@@ -1,0 +1,118 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: #0f1115;
+  color: #e8eaed;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 24px;
+  background: #171a21;
+  border-bottom: 1px solid #262b36;
+}
+
+h1 { margin: 0; font-size: 1.3rem; }
+
+nav { display: flex; gap: 8px; }
+
+.aba {
+  background: transparent;
+  color: #9aa0ad;
+  border: 1px solid #2d3340;
+  border-radius: 999px;
+  padding: 6px 16px;
+  cursor: pointer;
+}
+
+.aba.ativa { background: #2f6bff; border-color: #2f6bff; color: #fff; }
+
+main {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+#jogos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.cartao {
+  background: #171a21;
+  border: 1px solid #262b36;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.status { font-size: 0.8rem; color: #9aa0ad; }
+.status.ao-vivo { color: #ff5d5d; font-weight: 600; }
+
+.time {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.sigla { font-weight: 700; width: 38px; }
+.nome { flex: 1; color: #9aa0ad; font-size: 0.9rem; }
+.placar { font-size: 1.4rem; }
+
+.lider { font-size: 0.8rem; color: #9aa0ad; margin: 2px 0 0 48px; }
+
+.detalhes {
+  margin-top: 14px;
+  width: 100%;
+  background: #202531;
+  color: #e8eaed;
+  border: none;
+  border-radius: 8px;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.box { margin-top: 12px; overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { padding: 6px 8px; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+th { color: #9aa0ad; font-weight: 500; border-bottom: 1px solid #262b36; }
+
+.bloco { margin-bottom: 28px; }
+.bloco h2, .bloco h3 { font-size: 1rem; margin: 0 0 8px; }
+
+#atualizado { text-align: center; color: #6b7280; font-size: 0.8rem; }
+
+
+[hidden] { display: none !important; }
+
+.datas {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.datas button,
+.datas input {
+  background: #171a21;
+  color: #e8eaed;
+  border: 1px solid #2d3340;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font: inherit;
+}
+
+.datas input { color-scheme: dark; }
+.datas button { cursor: pointer; }
+.datas button:disabled { opacity: 0.4; cursor: default; }

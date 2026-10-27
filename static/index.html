@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scoresports</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Scoresports</h1>
+    <nav>
+      <button class="aba ativa" data-aba="jogos">Jogos</button>
+      <button class="aba" data-aba="classificacao">Classificação</button>
+    </nav>
+  </header>
+
+  <main>
+    <div class="datas" id="barra-datas">
+      <button id="dia-anterior" aria-label="Dia anterior">◀</button>
+      <input type="date" id="seletor-data">
+      <button id="dia-seguinte" aria-label="Próximo dia">▶</button>
+      <button id="hoje">Hoje</button>
+    </div>
+    <section id="jogos"></section>
+    <section id="classificacao" hidden></section>
+  </main>
+
+  <p id="atualizado"></p>
+  <script src="/static/app.js"></script>
+</body>
+</html>

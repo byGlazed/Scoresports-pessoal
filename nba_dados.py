@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 TEMPORADA = "2026-27"
 
@@ -33,6 +34,9 @@ def buscar_jogos():
             "status": j["gameStatusText"],
             "fora": _time_jogo(j["awayTeam"], j["gameLeaders"]["awayLeaders"]),
             "casa": _time_jogo(j["homeTeam"], j["gameLeaders"]["homeLeaders"]),
+            "id": j["gameId"],
+            "estado": j["gameStatus"],
+            "status": j["gameStatusText"],
         }
         for j in jogos
     ]
@@ -92,3 +96,64 @@ def buscar_classificacao():
             }
         )
     return resultado
+
+URL_CALENDARIO = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
+
+
+def _data_iso(texto):
+    """Aceita '2026-10-23T00:00:00Z' ou '10/23/2026 00:00:00' e devolve '2026-10-23'."""
+    texto = texto or ""
+    if len(texto) >= 10 and texto[4] == "-":
+        return texto[:10]
+    try:
+        return datetime.strptime(texto[:10], "%m/%d/%Y").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _agenda_bruta():
+    import requests
+
+    try:
+        resp = requests.get(URL_CALENDARIO, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        resp.raise_for_status()
+        dados = resp.json()
+    except Exception:
+        # plano B: o mesmo calendário pelo stats.nba.com
+        from nba_api.stats.endpoints import scheduleleaguev2
+
+        dados = scheduleleaguev2.ScheduleLeagueV2(season=TEMPORADA, timeout=30).get_dict()
+    return dados.get("leagueSchedule", dados)
+
+
+def _time_agenda(t, estado):
+    return {
+        "sigla": t.get("teamTricode") or "–",
+        "nome": f"{t.get('teamCity', '')} {t.get('teamName', '')}".strip() or "A definir",
+        "placar": t.get("score") if estado >= 2 else None,
+        "lider": None,
+    }
+
+
+def buscar_calendario():
+    agenda = _agenda_bruta()
+    jogos = []
+    for dia in agenda["gameDates"]:
+        for g in dia["games"]:
+            if g["gameId"].startswith("001"):
+                continue  # ignora a pré-temporada
+            data = _data_iso(g.get("gameDateEst")) or _data_iso(dia.get("gameDate"))
+            if not data:
+                continue
+            estado = g["gameStatus"]
+            jogos.append(
+                {
+                    "id": g["gameId"],
+                    "data": data,
+                    "status": (g.get("gameStatusText") or "").strip(),
+                    "estado": estado,  # 1 = vai começar, 2 = ao vivo, 3 = terminou
+                    "fora": _time_agenda(g["awayTeam"], estado),
+                    "casa": _time_agenda(g["homeTeam"], estado),
+                }
+            )
+    return jogos
