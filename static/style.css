@@ -116,3 +116,12 @@ th { color: #9aa0ad; font-weight: 500; border-bottom: 1px solid #262b36; }
 .datas input { color-scheme: dark; }
 .datas button { cursor: pointer; }
 .datas button:disabled { opacity: 0.4; cursor: default; }
+
+.cartao.aberto { grid-column: 1 / -1; }
+
+.box th, .box td { white-space: nowrap; }
+
+td.positivo { color: #3ddc84; }
+td.negativo { color: #ff5d5d; }
+
+.legenda { font-size: 0.75rem; color: #6b7280; margin: 4px 0 0; }

@@ -1,3 +1,5 @@
+const FUSO = "America/Sao_Paulo";
+
 const abertos = new Set(); // box scores abertos, para não fechar na atualização
 let datas = [];            // dias que têm jogos
 let hoje = null;
@@ -22,6 +24,7 @@ async function buscar(caminho) {
   return resp.json();
 }
 
+// uma célula pode ser um valor simples ou { texto, classe }
 function tabela(colunas, linhas) {
   const t = el("table");
   const cab = el("tr");
@@ -29,21 +32,50 @@ function tabela(colunas, linhas) {
   t.append(cab);
   linhas.forEach((valores) => {
     const tr = el("tr");
-    valores.forEach((v) => tr.append(el("td", null, v)));
+    valores.forEach((v) => {
+      if (v !== null && typeof v === "object") {
+        tr.append(el("td", v.classe, v.texto));
+      } else {
+        tr.append(el("td", null, v));
+      }
+    });
     t.append(tr);
   });
   return t;
 }
 
+/* ---------- Horário de Brasília ---------- */
+
+function horaBrasilia(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  return d.toLocaleTimeString("pt-BR", { timeZone: FUSO, hour: "2-digit", minute: "2-digit" });
+}
+
+function textoStatus(jogo) {
+  const hora = jogo.estado === 1 && jogo.inicio ? horaBrasilia(jogo.inicio) : null;
+  return hora ? `${hora} (Brasília)` : jogo.status;
+}
+
 /* ---------- Jogos ---------- */
+
+function maisMenos(n) {
+  if (n > 0) return { texto: "+" + n, classe: "positivo" };
+  if (n < 0) return { texto: String(n), classe: "negativo" };
+  return { texto: "0", classe: "" };
+}
 
 function tabelaBox(time) {
   const bloco = el("div", "bloco");
   bloco.append(el("h3", null, `${time.nome} (${time.placar})`));
   bloco.append(
     tabela(
-      ["Jogador", "MIN", "PTS", "REB", "AST"],
-      time.jogadores.map((j) => [j.nome, j.min, j.pts, j.reb, j.ast])
+      ["Jogador", "MIN", "PTS", "REB", "AST", "FG", "3PT", "FT", "TO", "PF", "STL", "BLK", "+/-"],
+      time.jogadores.map((j) => [
+        j.nome, j.min, j.pts, j.reb, j.ast,
+        j.fg, j.tres, j.ll, j.to, j.faltas, j.stl, j.blk,
+        maisMenos(j.mm),
+      ])
     )
   );
   return bloco;
@@ -53,7 +85,16 @@ async function carregarBox(jogo, area) {
   area.textContent = "Carregando...";
   try {
     const box = await buscar(`/jogos/${jogo.id}/boxscore`);
-    area.replaceChildren(tabelaBox(box.fora), tabelaBox(box.casa));
+    area.replaceChildren(
+      tabelaBox(box.fora),
+      tabelaBox(box.casa),
+      el(
+        "p",
+        "legenda",
+        "FG: arremessos de quadra · 3PT: bolas de três · FT: lances livres · TO: turnovers · " +
+          "PF: faltas · STL: roubos de bola · BLK: tocos · +/-: saldo de pontos com o jogador em quadra"
+      )
+    );
   } catch {
     area.textContent = "Não foi possível carregar o box score.";
   }
@@ -63,7 +104,7 @@ function cartaoJogo(jogo) {
   const cartao = el("article", "cartao");
 
   const aoVivo = jogo.estado === 2;
-  cartao.append(el("div", aoVivo ? "status ao-vivo" : "status", jogo.status));
+  cartao.append(el("div", aoVivo ? "status ao-vivo" : "status", textoStatus(jogo)));
 
   for (const lado of [jogo.fora, jogo.casa]) {
     const linha = el("div", "time");
@@ -89,11 +130,13 @@ function cartaoJogo(jogo) {
     async function alternar() {
       if (area.hidden) {
         area.hidden = false;
+        cartao.classList.add("aberto");
         abertos.add(jogo.id);
         botao.textContent = "Esconder box score";
         await carregarBox(jogo, area);
       } else {
         area.hidden = true;
+        cartao.classList.remove("aberto");
         abertos.delete(jogo.id);
         botao.textContent = "Ver box score";
       }
@@ -128,7 +171,7 @@ async function carregarJogos() {
       secao.replaceChildren(...jogos.map(cartaoJogo));
     }
     document.getElementById("atualizado").textContent =
-      "Atualizado às " + new Date().toLocaleTimeString("pt-BR");
+      "Atualizado às " + new Date().toLocaleTimeString("pt-BR", { timeZone: FUSO });
   } catch {
     if (dataPedida !== dataAtual) return;
     secao.replaceChildren(el("p", null, "Não foi possível carregar os jogos."));

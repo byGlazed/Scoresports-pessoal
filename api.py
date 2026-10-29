@@ -1,15 +1,13 @@
-from fastapi import FastAPI, HTTPException
-
-import cache
-import nba_dados
-
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
+import cache
+import nba_dados
 
 app = FastAPI(title="Scoresports pessoal")
 
@@ -21,6 +19,7 @@ app.mount("/static", StaticFiles(directory=PASTA_STATIC), name="static")
 def raiz():
     return FileResponse(PASTA_STATIC / "index.html")
 
+
 def _obter(chave, ttl, buscar):
     try:
         return cache.obter(chave, ttl, buscar)
@@ -29,26 +28,29 @@ def _obter(chave, ttl, buscar):
 
 
 def _hoje():
-    # a NBA organiza as datas pelo horário da costa leste dos EUA
-    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    return datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m-%d")
+
+
+def _calendario():
+    return _obter("calendario_v2", 600, nba_dados.buscar_calendario)
 
 
 def _ao_vivo():
     try:
-        return {j["id"]: j for j in cache.obter("jogos", 15, nba_dados.buscar_jogos)}
+        return {j["id"]: j for j in cache.obter("jogos_v2", 15, nba_dados.buscar_jogos)}
     except Exception:
         return {}
 
 
 @app.get("/datas")
 def datas():
-    agenda = _obter("calendario", 600, nba_dados.buscar_calendario)
+    agenda = _calendario()
     return {"datas": sorted({j["data"] for j in agenda}), "hoje": _hoje()}
 
 
 @app.get("/jogos")
 def jogos(data: str | None = None):
-    agenda = _obter("calendario", 600, nba_dados.buscar_calendario)
+    agenda = _calendario()
     data = data or _hoje()
     ao_vivo = _ao_vivo()
     do_dia = [j for j in agenda if j["data"] == data]
@@ -58,7 +60,7 @@ def jogos(data: str | None = None):
 
 @app.get("/jogos/{game_id}/boxscore")
 def boxscore(game_id: str):
-    return _obter(f"boxscore:{game_id}", 15, lambda: nba_dados.buscar_boxscore(game_id))
+    return _obter(f"boxscore_v2:{game_id}", 15, lambda: nba_dados.buscar_boxscore(game_id))
 
 
 @app.get("/classificacao")
