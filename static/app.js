@@ -11,6 +11,10 @@ const botaoAnterior = document.getElementById("dia-anterior");
 const botaoSeguinte = document.getElementById("dia-seguinte");
 const botaoHoje = document.getElementById("hoje");
 
+const dialogoJogador = document.getElementById("jogador-dialogo");
+const conteudoJogador = document.getElementById("jogador-conteudo");
+let jogadorAberto = null;
+
 function el(tag, classe, texto) {
   const e = document.createElement(tag);
   if (classe) e.className = classe;
@@ -24,7 +28,7 @@ async function buscar(caminho) {
   return resp.json();
 }
 
-// uma célula pode ser um valor simples ou { texto, classe }
+// uma célula pode ser um valor simples ou { texto, classe, aoClicar }
 function tabela(colunas, linhas) {
   const t = el("table");
   const cab = el("tr");
@@ -34,7 +38,15 @@ function tabela(colunas, linhas) {
     const tr = el("tr");
     valores.forEach((v) => {
       if (v !== null && typeof v === "object") {
-        tr.append(el("td", v.classe, v.texto));
+        const td = el("td", v.classe);
+        if (v.aoClicar) {
+          const botao = el("button", "link-jogador", v.texto);
+          botao.addEventListener("click", v.aoClicar);
+          td.append(botao);
+        } else {
+          td.textContent = v.texto;
+        }
+        tr.append(td);
       } else {
         tr.append(el("td", null, v));
       }
@@ -72,7 +84,8 @@ function tabelaBox(time) {
     tabela(
       ["Jogador", "MIN", "PTS", "REB", "AST", "FG", "3PT", "FT", "TO", "PF", "STL", "BLK", "+/-"],
       time.jogadores.map((j) => [
-        j.nome, j.min, j.pts, j.reb, j.ast,
+        { texto: j.nome, aoClicar: () => abrirJogador(j) },
+        j.min, j.pts, j.reb, j.ast,
         j.fg, j.tres, j.ll, j.to, j.faltas, j.stl, j.blk,
         maisMenos(j.mm),
       ])
@@ -238,6 +251,144 @@ async function carregarClassificacao() {
     secao.textContent = "Não foi possível carregar a classificação.";
   }
 }
+
+/* ---------- Painel do jogador ---------- */
+
+const ROTULOS_RECORDE = [
+  ["pts", "Pontos"],
+  ["reb", "Rebotes"],
+  ["ast", "Assistências"],
+  ["stl", "Roubos de bola"],
+  ["blk", "Tocos"],
+  ["tres", "Bolas de três"],
+];
+
+function dataCurta(iso) {
+  // '2026-10-23' -> '23/10'
+  return /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : iso;
+}
+
+function formatarPct(v) {
+  return v === null || v === undefined ? "–" : v.toFixed(1) + "%";
+}
+
+function cartaoMedia(rotulo, valor) {
+  const c = el("div", "media");
+  c.append(el("strong", null, valor), el("span", null, rotulo));
+  return c;
+}
+
+function blocoMedias(m) {
+  const grade = el("div", "medias");
+  grade.append(
+    cartaoMedia("PTS", m.pts),
+    cartaoMedia("REB", m.reb),
+    cartaoMedia("AST", m.ast),
+    cartaoMedia("STL", m.stl),
+    cartaoMedia("BLK", m.blk),
+    cartaoMedia("TO", m.to),
+    cartaoMedia("MIN", m.min),
+    cartaoMedia("FG%", formatarPct(m.fg_pct)),
+    cartaoMedia("3PT%", formatarPct(m.tres_pct)),
+    cartaoMedia("FT%", formatarPct(m.ll_pct))
+  );
+  return grade;
+}
+
+function blocoRecordes(recordes) {
+  const caixa = el("div", "box");
+  caixa.append(
+    tabela(
+      ["Estatística", "Recorde", "Jogo"],
+      ROTULOS_RECORDE.map(([chave, nome]) => {
+        const r = recordes[chave];
+        return [nome, r.valor, `${dataCurta(r.jogo.data)} · ${r.jogo.confronto}`];
+      })
+    )
+  );
+  return caixa;
+}
+
+function graficoPontos(jogos) {
+  // a lista vem do jogo mais recente para o mais antigo; o gráfico vai do primeiro ao último
+  const ordem = [...jogos].reverse();
+  const maximo = Math.max(...ordem.map((j) => j.pts), 1);
+  const grafico = el("div", "grafico");
+  ordem.forEach((j) => {
+    const barra = el("div", "barra");
+    barra.style.height = (j.pts / maximo) * 100 + "%";
+    barra.title = `${dataCurta(j.data)} ${j.confronto}: ${j.pts} pts`;
+    barra.append(el("span", null, j.pts));
+    grafico.append(barra);
+  });
+  return grafico;
+}
+
+function resultado(wl) {
+  if (wl === "W") return { texto: "V", classe: "positivo" };
+  if (wl === "L") return { texto: "D", classe: "negativo" };
+  return "";
+}
+
+function tabelaJogos(jogos) {
+  const caixa = el("div", "box");
+  caixa.append(
+    tabela(
+      ["Data", "Jogo", "Res.", "MIN", "PTS", "REB", "AST", "FG", "3PT"],
+      jogos.map((j) => [
+        dataCurta(j.data), j.confronto, resultado(j.resultado),
+        j.min, j.pts, j.reb, j.ast, j.fg, j.tres,
+      ])
+    )
+  );
+  return caixa;
+}
+
+function corpoJogador(dados) {
+  if (!dados.jogos_disputados) {
+    return [el("p", null, "Ainda não jogou nesta temporada.")];
+  }
+  return [
+    el("p", "status", `Temporada ${dados.temporada} · ${dados.jogos_disputados} jogos`),
+    el("h3", null, "Médias da temporada"),
+    blocoMedias(dados.medias),
+    el("h3", null, "Recordes da temporada"),
+    blocoRecordes(dados.recordes),
+    el("h3", null, "Pontos por jogo"),
+    graficoPontos(dados.jogos),
+    el("h3", null, "Todos os jogos"),
+    tabelaJogos(dados.jogos),
+  ];
+}
+
+async function abrirJogador(jogador) {
+  jogadorAberto = jogador.id;
+  conteudoJogador.replaceChildren(el("h2", null, jogador.nome), el("p", null, "Carregando..."));
+  if (!dialogoJogador.open) dialogoJogador.showModal();
+
+  try {
+    const dados = await buscar(`/jogadores/${jogador.id}`);
+    if (jogadorAberto !== jogador.id) return; // fechou ou abriu outro jogador
+    conteudoJogador.replaceChildren(el("h2", null, jogador.nome), ...corpoJogador(dados));
+  } catch {
+    if (jogadorAberto !== jogador.id) return;
+    conteudoJogador.replaceChildren(
+      el("h2", null, jogador.nome),
+      el("p", null, "Não foi possível carregar os dados do jogador.")
+    );
+  }
+}
+
+document.getElementById("fechar-jogador").addEventListener("click", () => dialogoJogador.close());
+
+// clicar fora do painel (no fundo escurecido) também fecha
+dialogoJogador.addEventListener("click", (e) => {
+  if (e.target === dialogoJogador) dialogoJogador.close();
+});
+
+dialogoJogador.addEventListener("close", () => {
+  jogadorAberto = null;
+});
 
 /* ---------- Abas e atualização automática ---------- */
 

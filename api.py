@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -8,6 +9,8 @@ from fastapi.staticfiles import StaticFiles
 
 import cache
 import nba_dados
+
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="Scoresports pessoal")
 
@@ -24,6 +27,7 @@ def _obter(chave, ttl, buscar):
     try:
         return cache.obter(chave, ttl, buscar)
     except Exception:
+        logger.exception("Falha ao obter '%s'", chave)
         raise HTTPException(status_code=502, detail="Não foi possível obter dados da NBA agora.")
 
 
@@ -60,7 +64,12 @@ def jogos(data: str | None = None):
 
 @app.get("/jogos/{game_id}/boxscore")
 def boxscore(game_id: str):
-    return _obter(f"boxscore_v2:{game_id}", 15, lambda: nba_dados.buscar_boxscore(game_id))
+    return _obter(f"boxscore_v3:{game_id}", 15, lambda: nba_dados.buscar_boxscore(game_id))
+
+
+@app.get("/jogadores/{player_id}")
+def jogador(player_id: int):
+    return _obter(f"jogador_v1:{player_id}", 600, lambda: nba_dados.buscar_jogador(player_id))
 
 
 @app.get("/classificacao")

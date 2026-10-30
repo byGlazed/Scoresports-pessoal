@@ -7,6 +7,8 @@ body {
   color: #e8eaed;
 }
 
+[hidden] { display: none !important; }
+
 header {
   display: flex;
   align-items: center;
@@ -39,6 +41,32 @@ main {
   padding: 24px;
 }
 
+/* ---------- Barra de datas ---------- */
+
+.datas {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.datas button,
+.datas input {
+  background: #171a21;
+  color: #e8eaed;
+  border: 1px solid #2d3340;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font: inherit;
+}
+
+.datas input { color-scheme: dark; }
+.datas button { cursor: pointer; }
+.datas button:disabled { opacity: 0.4; cursor: default; }
+
+/* ---------- Jogos ---------- */
+
 #jogos {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -52,6 +80,8 @@ main {
   border-radius: 12px;
   padding: 16px;
 }
+
+.cartao.aberto { grid-column: 1 / -1; }
 
 .status { font-size: 0.8rem; color: #9aa0ad; }
 .status.ao-vivo { color: #ff5d5d; font-weight: 600; }
@@ -80,48 +110,97 @@ main {
   cursor: pointer;
 }
 
+/* ---------- Tabelas ---------- */
+
 .box { margin-top: 12px; overflow-x: auto; }
+.box th, .box td { white-space: nowrap; }
 
 table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 th, td { padding: 6px 8px; text-align: right; }
 th:first-child, td:first-child { text-align: left; }
 th { color: #9aa0ad; font-weight: 500; border-bottom: 1px solid #262b36; }
 
-.bloco { margin-bottom: 28px; }
-.bloco h2, .bloco h3 { font-size: 1rem; margin: 0 0 8px; }
-
-#atualizado { text-align: center; color: #6b7280; font-size: 0.8rem; }
-
-
-[hidden] { display: none !important; }
-
-.datas {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-bottom: 20px;
-}
-
-.datas button,
-.datas input {
-  background: #171a21;
-  color: #e8eaed;
-  border: 1px solid #2d3340;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font: inherit;
-}
-
-.datas input { color-scheme: dark; }
-.datas button { cursor: pointer; }
-.datas button:disabled { opacity: 0.4; cursor: default; }
-
-.cartao.aberto { grid-column: 1 / -1; }
-
-.box th, .box td { white-space: nowrap; }
-
 td.positivo { color: #3ddc84; }
 td.negativo { color: #ff5d5d; }
 
+.bloco { margin-bottom: 28px; }
+.bloco h2, .bloco h3 { font-size: 1rem; margin: 0 0 8px; }
+
 .legenda { font-size: 0.75rem; color: #6b7280; margin: 4px 0 0; }
+
+#atualizado { text-align: center; color: #6b7280; font-size: 0.8rem; }
+
+/* ---------- Painel do jogador ---------- */
+
+.link-jogador {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: #8ab4ff;
+  cursor: pointer;
+  text-align: left;
+}
+.link-jogador:hover { text-decoration: underline; }
+
+dialog {
+  background: #171a21;
+  color: #e8eaed;
+  border: 1px solid #262b36;
+  border-radius: 12px;
+  padding: 0;
+  width: min(760px, 94vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+
+.painel { position: relative; padding: 20px; }
+
+.fechar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: transparent;
+  color: #9aa0ad;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+#jogador-conteudo h2 { margin: 0 28px 4px 0; font-size: 1.3rem; }
+#jogador-conteudo h3 { margin: 20px 0 8px; font-size: 1rem; }
+
+.medias {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+}
+.media { background: #202531; border-radius: 8px; padding: 10px; text-align: center; }
+.media strong { display: block; font-size: 1.2rem; }
+.media span { font-size: 0.75rem; color: #9aa0ad; }
+
+.grafico {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 140px;
+  padding-top: 18px;
+  overflow-x: auto;
+}
+.barra {
+  flex: 1 0 22px;
+  min-height: 2px;
+  position: relative;
+  background: #2f6bff;
+  border-radius: 4px 4px 0 0;
+}
+.barra span {
+  position: absolute;
+  top: -16px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 0.7rem;
+  color: #9aa0ad;
+}
