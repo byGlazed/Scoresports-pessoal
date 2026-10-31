@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
@@ -16,6 +17,10 @@ app = FastAPI(title="Scoresports pessoal")
 
 PASTA_STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=PASTA_STATIC), name="static")
+
+# Tempo de validade do cache (em segundos) dos dados que mudam durante o jogo.
+# Fica um pouco abaixo do intervalo de atualização da página (10 s).
+TTL_AO_VIVO = 8
 
 
 @app.get("/", include_in_schema=False)
@@ -41,7 +46,7 @@ def _calendario():
 
 def _ao_vivo():
     try:
-        return {j["id"]: j for j in cache.obter("jogos_v2", 15, nba_dados.buscar_jogos)}
+        return {j["id"]: j for j in cache.obter("jogos_v2", TTL_AO_VIVO, nba_dados.buscar_jogos)}
     except Exception:
         return {}
 
@@ -64,12 +69,25 @@ def jogos(data: str | None = None):
 
 @app.get("/jogos/{game_id}/boxscore")
 def boxscore(game_id: str):
-    return _obter(f"boxscore_v3:{game_id}", 15, lambda: nba_dados.buscar_boxscore(game_id))
+    return _obter(f"boxscore_v3:{game_id}", TTL_AO_VIVO, lambda: nba_dados.buscar_boxscore(game_id))
 
 
 @app.get("/jogadores/{player_id}")
 def jogador(player_id: int):
     return _obter(f"jogador_v1:{player_id}", 600, lambda: nba_dados.buscar_jogador(player_id))
+
+
+@app.get("/lideres")
+def lideres(modo: Literal["media", "total"] = "media"):
+    # uma única consulta (totais de todos os jogadores) serve para as duas visões
+    jogadores = _obter("stats_jogadores_v1", 1800, nba_dados.buscar_stats_jogadores)
+    return nba_dados.montar_lideres(jogadores, modo)
+
+
+@app.get("/corridas")
+def corridas():
+    # os rankings da NBA saem uma vez por semana, então 2 horas de cache bastam
+    return _obter("corridas_v1", 7200, nba_dados.buscar_corridas)
 
 
 @app.get("/classificacao")

@@ -22,7 +22,7 @@ header {
 
 h1 { margin: 0; font-size: 1.3rem; }
 
-nav { display: flex; gap: 8px; }
+nav { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .aba {
   background: transparent;
@@ -83,6 +83,8 @@ main {
 
 .cartao.aberto { grid-column: 1 / -1; }
 
+.cartao a { color: #8ab4ff; }
+
 .status { font-size: 0.8rem; color: #9aa0ad; }
 .status.ao-vivo { color: #ff5d5d; font-weight: 600; }
 
@@ -129,6 +131,56 @@ td.negativo { color: #ff5d5d; }
 .legenda { font-size: 0.75rem; color: #6b7280; margin: 4px 0 0; }
 
 #atualizado { text-align: center; color: #6b7280; font-size: 0.8rem; }
+
+/* ---------- Líderes da temporada ---------- */
+
+.alternador {
+  display: inline-flex;
+  border: 1px solid #2d3340;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.alternador button {
+  background: transparent;
+  color: #9aa0ad;
+  border: none;
+  padding: 6px 18px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.alternador button.ativo { background: #2f6bff; color: #fff; }
+
+.nota { font-size: 0.8rem; color: #6b7280; margin: 0 0 16px; max-width: 70ch; }
+
+.lideres-grade {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.lideres-grade h3 { margin: 0 0 4px; font-size: 1rem; }
+
+/* nas tabelas de líderes e de corridas, posição, jogador e time ficam à esquerda */
+.lideres-grade th:nth-child(-n+3), .lideres-grade td:nth-child(-n+3),
+#corridas th:nth-child(-n+3), #corridas td:nth-child(-n+3),
+#corridas th:last-child, #corridas td:last-child { text-align: left; }
+
+/* ---------- Corridas do MVP e do calouro ---------- */
+
+#corridas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+#corridas h2 { margin: 0 0 4px; font-size: 1.05rem; }
+.edicao { font-size: 0.8rem; color: #9aa0ad; margin: 0 0 8px; }
+.fonte { font-size: 0.8rem; color: #9aa0ad; margin: 12px 0 0; }
 
 /* ---------- Painel do jogador ---------- */
 

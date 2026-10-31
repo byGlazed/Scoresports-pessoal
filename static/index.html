@@ -12,6 +12,8 @@
     <nav>
       <button class="aba ativa" data-aba="jogos">Jogos</button>
       <button class="aba" data-aba="classificacao">Classificação</button>
+      <button class="aba" data-aba="lideres">Líderes</button>
+      <button class="aba" data-aba="corridas">MVP e calouro</button>
     </nav>
   </header>
 
@@ -22,8 +24,20 @@
       <button id="dia-seguinte" aria-label="Próximo dia">▶</button>
       <button id="hoje">Hoje</button>
     </div>
+
     <section id="jogos"></section>
     <section id="classificacao" hidden></section>
+
+    <section id="lideres" hidden>
+      <div class="alternador" id="modo-lideres">
+        <button class="ativo" data-modo="media">Por jogo</button>
+        <button data-modo="total">Total da temporada</button>
+      </div>
+      <p class="nota" id="nota-lideres"></p>
+      <div class="lideres-grade" id="lideres-grade"></div>
+    </section>
+
+    <section id="corridas" hidden></section>
   </main>
 
   <p id="atualizado"></p>

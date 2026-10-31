@@ -1,10 +1,17 @@
 const FUSO = "America/Sao_Paulo";
 
-const abertos = new Set(); // box scores abertos, para não fechar na atualização
-let datas = [];            // dias que têm jogos
+// Intervalos de atualização da aba Jogos (em milissegundos)
+const INTERVALO_AO_VIVO = 10000; // há jogo em andamento
+const INTERVALO_NORMAL = 30000;  // nenhum jogo em andamento
+
+const abertos = new Set();   // box scores abertos, para não fechar na atualização
+const ultimoBox = new Map(); // id do jogo -> { box, estado } do último box score recebido
+let datas = [];              // dias que têm jogos
 let hoje = null;
 let dataAtual = null;
 let haAoVivo = false;
+let abaAtual = "jogos";
+let modoLideres = "media";
 
 const seletor = document.getElementById("seletor-data");
 const botaoAnterior = document.getElementById("dia-anterior");
@@ -56,6 +63,18 @@ function tabela(colunas, linhas) {
   return t;
 }
 
+// só cria link para endereços do NBA.com
+function linkNba(texto, url) {
+  if (typeof url === "string" && url.startsWith("https://www.nba.com/")) {
+    const a = el("a", null, texto);
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    return a;
+  }
+  return el("span", null, texto);
+}
+
 /* ---------- Horário de Brasília ---------- */
 
 function horaBrasilia(iso) {
@@ -94,22 +113,36 @@ function tabelaBox(time) {
   return bloco;
 }
 
+function mostrarBox(box, area) {
+  area.replaceChildren(
+    tabelaBox(box.fora),
+    tabelaBox(box.casa),
+    el(
+      "p",
+      "legenda",
+      "FG: arremessos de quadra · 3PT: bolas de três · FT: lances livres · TO: turnovers · " +
+        "PF: faltas · STL: roubos de bola · BLK: tocos · +/-: saldo de pontos com o jogador em quadra"
+    )
+  );
+}
+
 async function carregarBox(jogo, area) {
-  area.textContent = "Carregando...";
+  // mostra na hora o último box recebido, para a tela não piscar a cada atualização
+  const guardado = ultimoBox.get(jogo.id);
+  if (guardado) {
+    mostrarBox(guardado.box, area);
+    // jogo terminado e box final já guardado: não precisa buscar de novo
+    if (guardado.estado === 3 && jogo.estado === 3) return;
+  } else {
+    area.textContent = "Carregando...";
+  }
+
   try {
     const box = await buscar(`/jogos/${jogo.id}/boxscore`);
-    area.replaceChildren(
-      tabelaBox(box.fora),
-      tabelaBox(box.casa),
-      el(
-        "p",
-        "legenda",
-        "FG: arremessos de quadra · 3PT: bolas de três · FT: lances livres · TO: turnovers · " +
-          "PF: faltas · STL: roubos de bola · BLK: tocos · +/-: saldo de pontos com o jogador em quadra"
-      )
-    );
+    ultimoBox.set(jogo.id, { box, estado: jogo.estado });
+    mostrarBox(box, area);
   } catch {
-    area.textContent = "Não foi possível carregar o box score.";
+    if (!guardado) area.textContent = "Não foi possível carregar o box score.";
   }
 }
 
@@ -184,7 +217,9 @@ async function carregarJogos() {
       secao.replaceChildren(...jogos.map(cartaoJogo));
     }
     document.getElementById("atualizado").textContent =
-      "Atualizado às " + new Date().toLocaleTimeString("pt-BR", { timeZone: FUSO });
+      "Atualizado às " +
+      new Date().toLocaleTimeString("pt-BR", { timeZone: FUSO }) +
+      (haAoVivo ? " · ao vivo: atualiza a cada 10 segundos" : "");
   } catch {
     if (dataPedida !== dataAtual) return;
     secao.replaceChildren(el("p", null, "Não foi possível carregar os jogos."));
@@ -249,6 +284,146 @@ async function carregarClassificacao() {
     secao.replaceChildren(...blocos);
   } catch {
     secao.textContent = "Não foi possível carregar a classificação.";
+  }
+}
+
+/* ---------- Líderes da temporada ---------- */
+
+function cartaoLideres(categoria, modo) {
+  const cartao = el("article", "cartao");
+  cartao.append(el("h3", null, categoria.rotulo));
+
+  if (categoria.jogadores.length === 0) {
+    cartao.append(el("p", "status", "Ainda não há jogadores que atendam ao mínimo exigido."));
+    return cartao;
+  }
+
+  const colunas = categoria.percentual
+    ? ["#", "Jogador", "Time", "Feitos/Tent.", "%"]
+    : ["#", "Jogador", "Time", "J", modo === "media" ? "Média" : "Total"];
+
+  const linhas = categoria.jogadores.map((j) => [
+    j.posicao,
+    { texto: j.nome, aoClicar: () => abrirJogador(j) },
+    j.time,
+    categoria.percentual ? j.extra : j.jogos,
+    categoria.percentual
+      ? j.valor.toFixed(1) + "%"
+      : modo === "media"
+        ? j.valor.toFixed(1)
+        : j.valor,
+  ]);
+
+  const caixa = el("div", "box");
+  caixa.append(tabela(colunas, linhas));
+  cartao.append(caixa);
+  return cartao;
+}
+
+function textoNotaLideres(dados) {
+  const partes = [];
+  if (dados.modo === "media") {
+    partes.push(
+      `Médias por jogo: entram jogadores com pelo menos ${dados.minimo_jogos} jogo(s), ` +
+        `cerca de 70% dos ${dados.jogos_da_liga} jogos disputados pela liga até agora.`
+    );
+  } else {
+    partes.push("Totais da temporada: todos os jogadores que já entraram em quadra.");
+  }
+  partes.push(
+    "Os percentuais exigem um mínimo de arremessos feitos, proporcional aos jogos disputados " +
+      "(baseado na regra da NBA), e não mudam com a opção escolhida. J = jogos disputados."
+  );
+  return partes.join(" ");
+}
+
+async function carregarLideres() {
+  const grade = document.getElementById("lideres-grade");
+  const modoPedido = modoLideres;
+  if (!grade.hasChildNodes()) grade.textContent = "Carregando...";
+
+  try {
+    const dados = await buscar("/lideres?modo=" + modoPedido);
+    if (modoPedido !== modoLideres) return; // o usuário já trocou de opção
+    grade.replaceChildren(...dados.categorias.map((c) => cartaoLideres(c, dados.modo)));
+    document.getElementById("nota-lideres").textContent = textoNotaLideres(dados);
+  } catch {
+    if (modoPedido !== modoLideres) return;
+    grade.textContent = "Não foi possível carregar os líderes agora.";
+  }
+}
+
+const botoesModo = document.querySelectorAll("#modo-lideres button");
+botoesModo.forEach((botao) => {
+  botao.addEventListener("click", () => {
+    modoLideres = botao.dataset.modo;
+    botoesModo.forEach((b) => b.classList.toggle("ativo", b === botao));
+    carregarLideres();
+  });
+});
+
+/* ---------- Corridas do MVP e do calouro do ano ---------- */
+
+function dataBR(iso) {
+  // '2026-11-07' -> '07/11/2026'
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso.slice(8)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : iso;
+}
+
+function celulaMovimento(e) {
+  if (e.movimento === "subiu") return { texto: `▲ ${e.anterior - e.posicao}`, classe: "positivo" };
+  if (e.movimento === "desceu") return { texto: `▼ ${e.posicao - e.anterior}`, classe: "negativo" };
+  if (e.movimento === "novo") return { texto: "novo", classe: "positivo" };
+  if (e.movimento === "igual") return { texto: "=", classe: "" };
+  return "";
+}
+
+function cartaoCorrida(titulo, corrida) {
+  const cartao = el("article", "cartao");
+  cartao.append(el("h2", null, titulo));
+
+  if (!corrida.ranking.length) {
+    cartao.append(
+      el(
+        "p",
+        "status",
+        "A NBA ainda não publicou o primeiro ranking desta temporada. " +
+          "Quando sair, ele aparece aqui sozinho."
+      )
+    );
+    const fonte = el("p", "fonte");
+    fonte.append(linkNba("Ver a página dos rankings no NBA.com", corrida.pagina));
+    cartao.append(fonte);
+    return cartao;
+  }
+
+  cartao.append(el("p", "edicao", `Edição de ${dataBR(corrida.data)}`));
+
+  const caixa = el("div", "box");
+  caixa.append(
+    tabela(
+      ["#", "Jogador", "Time", "Mov.", "Médias na temporada"],
+      corrida.ranking.map((e) => [e.posicao, e.nome, e.time, celulaMovimento(e), e.stats || ""])
+    )
+  );
+  cartao.append(caixa);
+
+  const fonte = el("p", "fonte", "Ranking semanal do NBA.com · ");
+  fonte.append(linkNba("ler a análise completa", corrida.url));
+  cartao.append(fonte);
+  return cartao;
+}
+
+async function carregarCorridas() {
+  const secao = document.getElementById("corridas");
+  if (!secao.hasChildNodes()) secao.textContent = "Carregando...";
+  try {
+    const dados = await buscar("/corridas");
+    secao.replaceChildren(
+      cartaoCorrida("Corrida pelo MVP", dados.mvp),
+      cartaoCorrida("Corrida pelo calouro do ano", dados.roy)
+    );
+  } catch {
+    secao.replaceChildren(el("p", null, "Não foi possível carregar os rankings da NBA agora."));
   }
 }
 
@@ -390,21 +565,29 @@ dialogoJogador.addEventListener("close", () => {
   jogadorAberto = null;
 });
 
-/* ---------- Abas e atualização automática ---------- */
+/* ---------- Abas ---------- */
 
-let abaAtual = "jogos";
+const ABAS = {
+  jogos: carregarJogos,
+  classificacao: carregarClassificacao,
+  lideres: carregarLideres,
+  corridas: carregarCorridas,
+};
 
 document.querySelectorAll(".aba").forEach((botao) => {
   botao.addEventListener("click", () => {
     abaAtual = botao.dataset.aba;
     document.querySelectorAll(".aba").forEach((b) => b.classList.toggle("ativa", b === botao));
-    document.getElementById("jogos").hidden = abaAtual !== "jogos";
+    for (const id of Object.keys(ABAS)) {
+      document.getElementById(id).hidden = id !== abaAtual;
+    }
     document.getElementById("barra-datas").hidden = abaAtual !== "jogos";
-    document.getElementById("classificacao").hidden = abaAtual !== "classificacao";
-    if (abaAtual === "jogos") carregarJogos();
-    else carregarClassificacao();
+    document.getElementById("atualizado").hidden = abaAtual !== "jogos";
+    ABAS[abaAtual]();
   });
 });
+
+/* ---------- Início e atualização automática ---------- */
 
 async function iniciar() {
   try {
@@ -424,11 +607,21 @@ async function iniciar() {
   carregarJogos();
 }
 
-iniciar();
+// Atualiza a aba Jogos sozinha: a cada 10 s quando há jogo ao vivo, a cada 30 s nos demais casos.
+// O box score aberto é atualizado junto, porque a lista inteira é desenhada de novo.
+function agendarAtualizacao() {
+  setTimeout(async () => {
+    if (abaAtual === "jogos" && !document.hidden && (dataAtual === hoje || haAoVivo)) {
+      await carregarJogos();
+    }
+    agendarAtualizacao();
+  }, haAoVivo ? INTERVALO_AO_VIVO : INTERVALO_NORMAL);
+}
 
-// só atualiza sozinho quando faz sentido: dia de hoje ou jogo em andamento
-setInterval(() => {
-  if (abaAtual === "jogos" && !document.hidden && (dataAtual === hoje || haAoVivo)) {
-    carregarJogos();
-  }
-}, 20000);
+// ao voltar para a aba do navegador, atualiza na hora
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && abaAtual === "jogos") carregarJogos();
+});
+
+iniciar();
+agendarAtualizacao();
