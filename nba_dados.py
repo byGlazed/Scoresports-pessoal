@@ -23,6 +23,7 @@ def _time_jogo(t, lider):
         "sigla": t["teamTricode"],
         "nome": f"{t['teamCity']} {t['teamName']}",
         "placar": t["score"],
+        "time_id": t.get("teamId"),
         "lider": _lider(lider),
     }
 
@@ -59,6 +60,8 @@ def _time_box(t):
             {
                 "nome": j["name"],
                 "id": j["personId"],
+                "camisa": j.get("jerseyNum"),
+                "posicao": j.get("position"),
                 "min": minutos,
                 "pts": s["points"],
                 "reb": s["reboundsTotal"],
@@ -66,6 +69,9 @@ def _time_box(t):
                 "fg": _arremessos(s.get("fieldGoalsMade"), s.get("fieldGoalsAttempted")),
                 "tres": _arremessos(s.get("threePointersMade"), s.get("threePointersAttempted")),
                 "ll": _arremessos(s.get("freeThrowsMade"), s.get("freeThrowsAttempted")),
+                "dois": _arremessos(s.get("twoPointersMade"), s.get("twoPointersAttempted")),
+                "reb_of": s.get("reboundsOffensive", 0),
+                "reb_def": s.get("reboundsDefensive", 0),
                 "to": s.get("turnovers", 0),
                 "faltas": s.get("foulsPersonal", 0),
                 "stl": s.get("steals", 0),
@@ -78,6 +84,7 @@ def _time_box(t):
         "sigla": t["teamTricode"],
         "nome": f"{t['teamCity']} {t['teamName']}",
         "placar": t["score"],
+        "time_id": t.get("teamId"),
         "jogadores": jogadores,
     }
 
@@ -94,6 +101,33 @@ def buscar_boxscore(game_id):
     }
 
 
+def buscar_arremessos(game_id):
+    """Todos os arremessos de quadra de um jogo, com a posição na quadra."""
+    from nba_api.live.nba.endpoints import playbyplay
+
+    acoes = playbyplay.PlayByPlay(game_id).get_dict()["game"]["actions"]
+    arremessos = []
+    for a in acoes:
+        if a.get("actionType") not in ("2pt", "3pt"):
+            continue
+        x, y = a.get("xLegacy"), a.get("yLegacy")
+        if x is None or y is None:
+            continue
+        arremessos.append(
+            {
+                "jogador": a.get("personId"),
+                "x": x,
+                "y": y,
+                "feito": a.get("shotResult") == "Made",
+                "periodo": a.get("period"),
+                "tipo": a.get("actionType"),
+                "distancia": a.get("shotDistance"),
+                "relogio": _minutos(a.get("clock")),
+            }
+        )
+    return arremessos
+
+
 def buscar_classificacao():
     from nba_api.stats.endpoints import leaguestandingsv3
 
@@ -105,6 +139,7 @@ def buscar_classificacao():
             {
                 "posicao": t["PlayoffRank"],
                 "time": f"{t['TeamCity']} {t['TeamName']}",
+                "time_id": t.get("TeamID"),
                 "vitorias": t["WINS"],
                 "derrotas": t["LOSSES"],
                 "aproveitamento": t["WinPCT"],
@@ -149,6 +184,7 @@ def _time_agenda(t, estado):
         "sigla": t.get("teamTricode") or "–",
         "nome": f"{t.get('teamCity', '')} {t.get('teamName', '')}".strip() or "A definir",
         "placar": t.get("score") if estado >= 2 else None,
+        "time_id": t.get("teamId"),
         "lider": None,
     }
 

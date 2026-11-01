@@ -4,9 +4,19 @@ const FUSO = "America/Sao_Paulo";
 const INTERVALO_AO_VIVO = 10000; // há jogo em andamento
 const INTERVALO_NORMAL = 30000;  // nenhum jogo em andamento
 
-const abertos = new Set();   // box scores abertos, para não fechar na atualização
-const ultimoBox = new Map(); // id do jogo -> { box, estado } do último box score recebido
-let datas = [];              // dias que têm jogos
+const SVG_NS = "http://www.w3.org/2000/svg";
+const urlLogo = (id) => `https://cdn.nba.com/logos/nba/${id}/global/L/logo.svg`;
+const urlFoto = (id, tamanho = "1040x760") =>
+  `https://cdn.nba.com/headshots/nba/latest/${tamanho}/${id}.png`;
+
+const abertos = new Set();         // box scores abertos, para não fechar na atualização
+const ultimoBox = new Map();       // id do jogo -> { box, estado } do último box score recebido
+const timeEscolhido = new Map();   // id do jogo -> "fora" | "casa" (time exibido no box score)
+const cacheTemporada = new Map();  // id do jogador -> dados da temporada
+const cacheArremessos = new Map(); // "idJogo:idJogador" -> lista de arremessos
+const falhas = new Set();          // pedidos que deram erro (para mostrar a mensagem certa)
+
+let datas = [];                    // dias que têm jogos
 let hoje = null;
 let dataAtual = null;
 let haAoVivo = false;
@@ -17,15 +27,23 @@ const seletor = document.getElementById("seletor-data");
 const botaoAnterior = document.getElementById("dia-anterior");
 const botaoSeguinte = document.getElementById("dia-seguinte");
 const botaoHoje = document.getElementById("hoje");
+const faixaDatas = document.getElementById("faixa-datas");
 
 const dialogoJogador = document.getElementById("jogador-dialogo");
 const conteudoJogador = document.getElementById("jogador-conteudo");
-let jogadorAberto = null;
+
+/* ---------- Funções de apoio ---------- */
 
 function el(tag, classe, texto) {
   const e = document.createElement(tag);
   if (classe) e.className = classe;
   if (texto !== undefined && texto !== null) e.textContent = texto;
+  return e;
+}
+
+function svg(tag, atributos = {}) {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [chave, valor] of Object.entries(atributos)) e.setAttribute(chave, String(valor));
   return e;
 }
 
@@ -35,28 +53,47 @@ async function buscar(caminho) {
   return resp.json();
 }
 
-// uma célula pode ser um valor simples ou { texto, classe, aoClicar }
+function imagem(url, classe, alt = "") {
+  const img = el("img", classe);
+  img.src = url;
+  img.alt = alt;
+  img.loading = "lazy";
+  img.addEventListener("error", () => {
+    img.hidden = true; // se a imagem não carregar, ela simplesmente some
+  });
+  return img;
+}
+
+function logoTime(timeId, classe = "logo") {
+  return timeId ? imagem(urlLogo(timeId), classe) : null;
+}
+
+// uma célula pode ser um valor simples ou { texto, classe, aoClicar, logo }
 function tabela(colunas, linhas) {
   const t = el("table");
   const cab = el("tr");
   colunas.forEach((c) => cab.append(el("th", null, c)));
   t.append(cab);
+
   linhas.forEach((valores) => {
     const tr = el("tr");
     valores.forEach((v) => {
-      if (v !== null && typeof v === "object") {
-        const td = el("td", v.classe);
+      const objeto = v !== null && typeof v === "object";
+      const td = el("td", objeto ? v.classe : null);
+      if (objeto) {
+        const logo = v.logo ? logoTime(v.logo, "logo-mini") : null;
+        if (logo) td.append(logo);
         if (v.aoClicar) {
           const botao = el("button", "link-jogador", v.texto);
           botao.addEventListener("click", v.aoClicar);
           td.append(botao);
         } else {
-          td.textContent = v.texto;
+          td.append(el("span", null, v.texto));
         }
-        tr.append(td);
       } else {
-        tr.append(el("td", null, v));
+        td.textContent = v ?? "";
       }
+      tr.append(td);
     });
     t.append(tr);
   });
@@ -75,6 +112,19 @@ function linkNba(texto, url) {
   return el("span", null, texto);
 }
 
+function maisMenos(n) {
+  if (n > 0) return { texto: "+" + n, classe: "positivo" };
+  if (n < 0) return { texto: String(n), classe: "negativo" };
+  return { texto: "0", classe: "" };
+}
+
+// "12/13" -> "12/13 (92%)"
+function comPct(valor) {
+  if (typeof valor !== "string" || !valor.includes("/")) return "–";
+  const [feitos, tentados] = valor.split("/").map(Number);
+  return tentados > 0 ? `${feitos}/${tentados} (${Math.round((100 * feitos) / tentados)}%)` : valor;
+}
+
 /* ---------- Horário de Brasília ---------- */
 
 function horaBrasilia(iso) {
@@ -88,40 +138,52 @@ function textoStatus(jogo) {
   return hora ? `${hora} (Brasília)` : jogo.status;
 }
 
-/* ---------- Jogos ---------- */
+/* ---------- Box score ---------- */
 
-function maisMenos(n) {
-  if (n > 0) return { texto: "+" + n, classe: "positivo" };
-  if (n < 0) return { texto: String(n), classe: "negativo" };
-  return { texto: "0", classe: "" };
-}
-
-function tabelaBox(time) {
-  const bloco = el("div", "bloco");
-  bloco.append(el("h3", null, `${time.nome} (${time.placar})`));
-  bloco.append(
+function tabelaBox(time, contexto) {
+  const caixa = el("div", "box");
+  caixa.append(
     tabela(
       ["Jogador", "MIN", "PTS", "REB", "AST", "FG", "3PT", "FT", "TO", "PF", "STL", "BLK", "+/-"],
       time.jogadores.map((j) => [
-        { texto: j.nome, aoClicar: () => abrirJogador(j) },
+        { texto: j.nome, aoClicar: () => abrirJogador(j, contexto) },
         j.min, j.pts, j.reb, j.ast,
         j.fg, j.tres, j.ll, j.to, j.faltas, j.stl, j.blk,
         maisMenos(j.mm),
       ])
     )
   );
-  return bloco;
+  return caixa;
 }
 
-function mostrarBox(box, area) {
+function mostrarBox(box, area, jogo) {
+  const lado = timeEscolhido.get(jogo.id) || "fora";
+
+  // botões para escolher qual time aparece (visitante ou mandante)
+  const escolha = el("div", "segmentos");
+  for (const chave of ["fora", "casa"]) {
+    const time = box[chave];
+    const botao = el("button", chave === lado ? "ativo" : "");
+    const logo = logoTime(time.time_id, "logo-mini");
+    if (logo) botao.append(logo);
+    botao.append(el("span", null, time.sigla));
+    botao.addEventListener("click", () => {
+      timeEscolhido.set(jogo.id, chave);
+      const atual = (ultimoBox.get(jogo.id) || {}).box || box;
+      mostrarBox(atual, area, jogo);
+    });
+    escolha.append(botao);
+  }
+
   area.replaceChildren(
-    tabelaBox(box.fora),
-    tabelaBox(box.casa),
+    escolha,
+    tabelaBox(box[lado], { jogo, box, lado }),
     el(
       "p",
       "legenda",
       "FG: arremessos de quadra · 3PT: bolas de três · FT: lances livres · TO: turnovers · " +
-        "PF: faltas · STL: roubos de bola · BLK: tocos · +/-: saldo de pontos com o jogador em quadra"
+        "PF: faltas · STL: roubos de bola · BLK: tocos · +/-: saldo de pontos com o jogador em quadra. " +
+        "Toque no nome de um jogador para ver o mapa de arremessos."
     )
   );
 }
@@ -130,7 +192,7 @@ async function carregarBox(jogo, area) {
   // mostra na hora o último box recebido, para a tela não piscar a cada atualização
   const guardado = ultimoBox.get(jogo.id);
   if (guardado) {
-    mostrarBox(guardado.box, area);
+    mostrarBox(guardado.box, area, jogo);
     // jogo terminado e box final já guardado: não precisa buscar de novo
     if (guardado.estado === 3 && jogo.estado === 3) return;
   } else {
@@ -140,30 +202,38 @@ async function carregarBox(jogo, area) {
   try {
     const box = await buscar(`/jogos/${jogo.id}/boxscore`);
     ultimoBox.set(jogo.id, { box, estado: jogo.estado });
-    mostrarBox(box, area);
+    mostrarBox(box, area, jogo);
   } catch {
     if (!guardado) area.textContent = "Não foi possível carregar o box score.";
   }
 }
 
+/* ---------- Lista de jogos ---------- */
+
 function cartaoJogo(jogo) {
-  const cartao = el("article", "cartao");
+  const cartao = el("article", "jogo");
 
   const aoVivo = jogo.estado === 2;
-  cartao.append(el("div", aoVivo ? "status ao-vivo" : "status", textoStatus(jogo)));
+  const topo = el("div", "jogo-topo");
+  topo.append(el("span", aoVivo ? "status ao-vivo" : "status", textoStatus(jogo)));
+  cartao.append(topo);
+
+  const terminou = jogo.estado === 3;
+  const maior = Math.max(Number(jogo.fora.placar), Number(jogo.casa.placar));
 
   for (const lado of [jogo.fora, jogo.casa]) {
-    const linha = el("div", "time");
+    const perdeu = terminou && Number(lado.placar) < maior;
+    const linha = el("div", perdeu ? "lado perdedor" : "lado");
     linha.append(
-      el("span", "sigla", lado.sigla),
-      el("span", "nome", lado.nome),
-      el("strong", "placar", lado.placar ?? "–")
+      logoTime(lado.time_id) || el("span", "logo vazio"),
+      el("span", "nome-time", lado.nome),
+      el("strong", "pontos", lado.placar ?? "–")
     );
     cartao.append(linha);
 
     if (lado.lider) {
       const l = lado.lider;
-      cartao.append(el("div", "lider", `${l.nome}: ${l.pts} pts, ${l.reb} reb, ${l.ast} ast`));
+      cartao.append(el("div", "lider", `${l.nome} · ${l.pts} pts, ${l.reb} reb, ${l.ast} ast`));
     }
   }
 
@@ -201,7 +271,7 @@ async function carregarJogos() {
   const secao = document.getElementById("jogos");
 
   if (!dataAtual) {
-    secao.replaceChildren(el("p", null, "Nenhuma data disponível."));
+    secao.replaceChildren(el("p", "status", "Nenhuma data disponível."));
     return;
   }
 
@@ -212,7 +282,7 @@ async function carregarJogos() {
 
     haAoVivo = jogos.some((j) => j.estado === 2);
     if (jogos.length === 0) {
-      secao.replaceChildren(el("p", null, "Nenhum jogo nesta data."));
+      secao.replaceChildren(el("p", "status", "Nenhum jogo nesta data."));
     } else {
       secao.replaceChildren(...jogos.map(cartaoJogo));
     }
@@ -222,7 +292,7 @@ async function carregarJogos() {
       (haAoVivo ? " · ao vivo: atualiza a cada 10 segundos" : "");
   } catch {
     if (dataPedida !== dataAtual) return;
-    secao.replaceChildren(el("p", null, "Não foi possível carregar os jogos."));
+    secao.replaceChildren(el("p", "status", "Não foi possível carregar os jogos."));
   }
 }
 
@@ -244,10 +314,42 @@ function dataInicial() {
   return datas[0] || null;
 }
 
+function rotuloDia(iso) {
+  const d = new Date(iso + "T12:00:00");
+  const semana = d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "");
+  return { semana, dia: `${iso.slice(8, 10)}/${iso.slice(5, 7)}` };
+}
+
+// mostra 7 dias com jogos ao redor do dia escolhido
+function desenharFaixa() {
+  if (!dataAtual || datas.length === 0) {
+    faixaDatas.replaceChildren();
+    return;
+  }
+  const TAMANHO = 7;
+  let i = datas.findIndex((d) => d >= dataAtual);
+  if (i < 0) i = datas.length - 1;
+  const inicio = Math.max(0, Math.min(i - 3, datas.length - TAMANHO));
+
+  faixaDatas.replaceChildren(
+    ...datas.slice(inicio, inicio + TAMANHO).map((d) => {
+      const { semana, dia } = rotuloDia(d);
+      let classe = "dia";
+      if (d === dataAtual) classe += " ativo";
+      if (d === hoje) classe += " hoje";
+      const botao = el("button", classe);
+      botao.append(el("span", "semana", semana), el("span", "numero", dia));
+      botao.addEventListener("click", () => mudarData(d));
+      return botao;
+    })
+  );
+}
+
 function atualizarBarra() {
   seletor.value = dataAtual || "";
   botaoAnterior.disabled = !diaVizinho(-1);
   botaoSeguinte.disabled = !diaVizinho(1);
+  desenharFaixa();
 }
 
 function mudarData(nova) {
@@ -265,25 +367,42 @@ seletor.addEventListener("change", () => mudarData(seletor.value));
 
 /* ---------- Classificação ---------- */
 
+function celulaPosicao(posicao) {
+  // 1º ao 6º: playoffs direto; 7º ao 10º: play-in
+  const classe = posicao <= 6 ? "zona-direta" : posicao <= 10 ? "zona-playin" : null;
+  return { texto: posicao, classe };
+}
+
 async function carregarClassificacao() {
   const secao = document.getElementById("classificacao");
-  secao.textContent = "Carregando...";
+  if (!secao.hasChildNodes()) secao.textContent = "Carregando...";
   try {
     const dados = await buscar("/classificacao");
-    const blocos = Object.entries(dados).map(([conferencia, times]) => {
-      const bloco = el("div", "bloco");
-      bloco.append(el("h2", null, "Conferência " + conferencia));
-      bloco.append(
+    const cartoes = Object.entries(dados).map(([conferencia, times]) => {
+      const cartao = el("article", "cartao");
+      cartao.append(el("h2", null, "Conferência " + conferencia));
+      const caixa = el("div", "box");
+      caixa.append(
         tabela(
           ["#", "Time", "V", "D", "%"],
-          times.map((t) => [t.posicao, t.time, t.vitorias, t.derrotas, t.aproveitamento.toFixed(3)])
+          times.map((t) => [
+            celulaPosicao(t.posicao),
+            { texto: t.time, logo: t.time_id },
+            t.vitorias,
+            t.derrotas,
+            t.aproveitamento.toFixed(3),
+          ])
         )
       );
-      return bloco;
+      cartao.append(
+        caixa,
+        el("p", "legenda", "Verde: 1º ao 6º, direto aos playoffs · Âmbar: 7º ao 10º, play-in")
+      );
+      return cartao;
     });
-    secao.replaceChildren(...blocos);
+    secao.replaceChildren(...cartoes);
   } catch {
-    secao.textContent = "Não foi possível carregar a classificação.";
+    secao.replaceChildren(el("p", "status", "Não foi possível carregar a classificação."));
   }
 }
 
@@ -349,7 +468,7 @@ async function carregarLideres() {
     document.getElementById("nota-lideres").textContent = textoNotaLideres(dados);
   } catch {
     if (modoPedido !== modoLideres) return;
-    grade.textContent = "Não foi possível carregar os líderes agora.";
+    grade.replaceChildren(el("p", "status", "Não foi possível carregar os líderes agora."));
   }
 }
 
@@ -423,11 +542,18 @@ async function carregarCorridas() {
       cartaoCorrida("Corrida pelo calouro do ano", dados.roy)
     );
   } catch {
-    secao.replaceChildren(el("p", null, "Não foi possível carregar os rankings da NBA agora."));
+    secao.replaceChildren(el("p", "status", "Não foi possível carregar os rankings da NBA agora."));
   }
 }
 
 /* ---------- Painel do jogador ---------- */
+
+// estado do painel aberto: { jogador, contexto, aba, periodo }
+// contexto existe quando o painel foi aberto pelo box score: { jogo, box, lado }
+let dialogo = null;
+let corpoEl = null;
+let chipAtivo = null;
+let temporizadorDialogo = null;
 
 const ROTULOS_RECORDE = [
   ["pts", "Pontos"],
@@ -446,6 +572,22 @@ function dataCurta(iso) {
 function formatarPct(v) {
   return v === null || v === undefined ? "–" : v.toFixed(1) + "%";
 }
+
+function periodoRotulo(p) {
+  return p <= 4 ? "Q" + p : "OT" + (p - 4);
+}
+
+function nomeCurto(nome) {
+  const partes = String(nome).trim().split(/\s+/);
+  if (partes.length < 2) return String(nome);
+  return `${partes[0][0]}. ${partes.slice(1).join(" ")}`;
+}
+
+function boxAtual(contexto) {
+  return (ultimoBox.get(contexto.jogo.id) || {}).box || contexto.box;
+}
+
+/* --- aba "Temporada" --- */
 
 function cartaoMedia(rotulo, valor) {
   const c = el("div", "media");
@@ -521,7 +663,7 @@ function tabelaJogos(jogos) {
 
 function corpoJogador(dados) {
   if (!dados.jogos_disputados) {
-    return [el("p", null, "Ainda não jogou nesta temporada.")];
+    return [el("p", "status", "Ainda não jogou nesta temporada.")];
   }
   return [
     el("p", "status", `Temporada ${dados.temporada} · ${dados.jogos_disputados} jogos`),
@@ -536,22 +678,338 @@ function corpoJogador(dados) {
   ];
 }
 
-async function abrirJogador(jogador) {
-  jogadorAberto = jogador.id;
-  conteudoJogador.replaceChildren(el("h2", null, jogador.nome), el("p", null, "Carregando..."));
-  if (!dialogoJogador.open) dialogoJogador.showModal();
-
-  try {
-    const dados = await buscar(`/jogadores/${jogador.id}`);
-    if (jogadorAberto !== jogador.id) return; // fechou ou abriu outro jogador
-    conteudoJogador.replaceChildren(el("h2", null, jogador.nome), ...corpoJogador(dados));
-  } catch {
-    if (jogadorAberto !== jogador.id) return;
-    conteudoJogador.replaceChildren(
-      el("h2", null, jogador.nome),
-      el("p", null, "Não foi possível carregar os dados do jogador.")
-    );
+function corpoTemporadaDoJogador() {
+  const id = dialogo.jogador.id;
+  const dados = cacheTemporada.get(id);
+  if (!dados) {
+    const texto = falhas.has("temporada:" + id)
+      ? "Não foi possível carregar os dados do jogador."
+      : "Carregando...";
+    return [el("p", "status", texto)];
   }
+  return corpoJogador(dados);
+}
+
+/* --- aba "Neste jogo": mapa de arremessos e estatísticas --- */
+
+function textoArremesso(a) {
+  const quando = periodoRotulo(a.periodo) + (a.relogio ? " " + a.relogio : "");
+  const tipo = a.tipo === "3pt" ? "bola de três" : "arremesso de 2";
+  const distancia = a.distancia !== null && a.distancia !== undefined ? ` · ${a.distancia} pés` : "";
+  return `${quando} · ${tipo}${distancia} · ${a.feito ? "acertou" : "errou"}`;
+}
+
+// Quadra desenhada em SVG com as medidas da NBA (cada unidade = 1/10 de pé).
+// A cesta fica no ponto (0, 0), no topo; o eixo y cresce em direção à meia-quadra.
+function quadraComArremessos(lista) {
+  const linha = { fill: "none", stroke: "#1b1710", "stroke-opacity": 0.75, "stroke-width": 2 };
+  const raiz = svg("svg", {
+    viewBox: "-255 -52 510 480",
+    class: "quadra",
+    role: "img",
+    "aria-label": "Mapa dos arremessos do jogador na quadra",
+  });
+
+  raiz.append(
+    svg("rect", { x: -250, y: -47.5, width: 500, height: 470, fill: "#a88f60" }),
+    svg("rect", { x: -80, y: -47.5, width: 160, height: 190, fill: "#97804f" }),
+    svg("rect", { x: -250, y: -47.5, width: 500, height: 470, ...linha }),
+    svg("rect", { x: -80, y: -47.5, width: 160, height: 190, ...linha }),
+    svg("rect", { x: -60, y: -47.5, width: 120, height: 190, ...linha }),
+    svg("path", { d: "M -60 142.5 A 60 60 0 0 0 60 142.5", ...linha }),
+    svg("path", { d: "M -60 142.5 A 60 60 0 0 1 60 142.5", ...linha, "stroke-dasharray": "8 8" }),
+    svg("path", { d: "M -40 0 A 40 40 0 0 0 40 0", ...linha }),
+    svg("line", { x1: -30, y1: -8, x2: 30, y2: -8, ...linha }),
+    svg("circle", { cx: 0, cy: 0, r: 7.5, ...linha }),
+    svg("path", { d: "M -220 -47.5 L -220 89.5 A 237.5 237.5 0 0 0 220 89.5 L 220 -47.5", ...linha }),
+    svg("path", { d: "M -60 422.5 A 60 60 0 0 1 60 422.5", ...linha }),
+    svg("path", { d: "M -20 422.5 A 20 20 0 0 1 20 422.5", ...linha })
+  );
+
+  // erros primeiro, acertos por cima
+  const ordenada = [...lista].sort((a, b) => Number(a.feito) - Number(b.feito));
+  for (const a of ordenada) {
+    const x = Number(a.x);
+    const y = Number(a.y);
+    const marca = a.feito
+      ? svg("circle", { cx: x, cy: y, r: 9, fill: "#34c77b", stroke: "#10151a", "stroke-width": 3 })
+      : svg("path", {
+          d: `M ${x - 7} ${y - 7} L ${x + 7} ${y + 7} M ${x - 7} ${y + 7} L ${x + 7} ${y - 7}`,
+          fill: "none",
+          stroke: "#ee5a5f",
+          "stroke-width": 4,
+          "stroke-linecap": "round",
+        });
+    const dica = svg("title");
+    dica.textContent = textoArremesso(a);
+    marca.append(dica);
+    raiz.append(marca);
+  }
+  return raiz;
+}
+
+function resumoArremessos(lista) {
+  const resumo = el("p", "resumo-arremessos");
+  if (lista.length === 0) {
+    resumo.textContent = "Nenhum arremesso de quadra neste período.";
+    return resumo;
+  }
+  const feitos = lista.filter((a) => a.feito).length;
+  const tres = lista.filter((a) => a.tipo === "3pt");
+  const tresFeitos = tres.filter((a) => a.feito).length;
+
+  const total = el("span");
+  total.append(el("strong", null, `${feitos}/${lista.length}`), ` na quadra (${Math.round((100 * feitos) / lista.length)}%)`);
+  const bolas = el("span");
+  bolas.append(el("strong", null, `${tresFeitos}/${tres.length}`), " bolas de três");
+  const legenda = el("span");
+  legenda.append(el("span", "marca-acerto", "●"), " acerto  ", el("span", "marca-erro", "✕"), " erro");
+  resumo.append(total, bolas, legenda);
+  return resumo;
+}
+
+function secaoArremessos() {
+  const { jogador, contexto, periodo } = dialogo;
+  const chave = `${contexto.jogo.id}:${jogador.id}`;
+  const secao = el("div", "arremessos");
+  secao.append(el("h3", null, "Mapa de arremessos"));
+
+  const lista = cacheArremessos.get(chave);
+  if (!lista) {
+    const texto = falhas.has("arremessos:" + chave)
+      ? "Não foi possível carregar os arremessos deste jogo."
+      : "Carregando...";
+    secao.append(el("p", "status", texto));
+    return secao;
+  }
+
+  // filtro por período: Todos, Q1..Q4 e prorrogações, se houver
+  const periodos = Math.max(4, ...lista.map((a) => a.periodo || 0));
+  const opcoes = [["todos", "Todos"]];
+  for (let p = 1; p <= periodos; p++) opcoes.push([p, periodoRotulo(p)]);
+
+  const filtro = el("div", "segmentos");
+  for (const [valor, rotulo] of opcoes) {
+    const botao = el("button", periodo === valor ? "ativo" : "", rotulo);
+    botao.addEventListener("click", () => {
+      dialogo.periodo = valor;
+      desenharCorpo();
+    });
+    filtro.append(botao);
+  }
+
+  const filtrada = periodo === "todos" ? lista : lista.filter((a) => a.periodo === periodo);
+  secao.append(filtro, quadraComArremessos(filtrada), resumoArremessos(filtrada));
+  return secao;
+}
+
+function linhaStat(rotulo, valor, opcoes = {}) {
+  const linha = el("div", opcoes.sub ? "linha-stat sub" : "linha-stat");
+  linha.append(
+    el("span", "rotulo", rotulo),
+    el("span", opcoes.classe ? "valor " + opcoes.classe : "valor", valor)
+  );
+  return linha;
+}
+
+function grupoStats(...linhas) {
+  const grupo = el("div", "grupo");
+  grupo.append(...linhas);
+  return grupo;
+}
+
+function linhaDoJogadorNoBox() {
+  const { jogador, contexto } = dialogo;
+  const time = boxAtual(contexto)[contexto.lado];
+  return time.jogadores.find((j) => j.id === jogador.id) || jogador;
+}
+
+function corpoJogo() {
+  const j = linhaDoJogadorNoBox();
+  const mm = maisMenos(j.mm);
+
+  const grupos = el("div", "grupos");
+  grupos.append(
+    grupoStats(linhaStat("Minutos", j.min)),
+    grupoStats(
+      linhaStat("Pontos", j.pts),
+      linhaStat("Lances livres", comPct(j.ll)),
+      linhaStat("Arremessos de 2", comPct(j.dois)),
+      linhaStat("Bolas de três", comPct(j.tres)),
+      linhaStat("Arremessos de quadra", comPct(j.fg))
+    ),
+    grupoStats(
+      linhaStat("Rebotes", j.reb),
+      linhaStat("Ofensivos", j.reb_of ?? "–", { sub: true }),
+      linhaStat("Defensivos", j.reb_def ?? "–", { sub: true })
+    ),
+    grupoStats(
+      linhaStat("Assistências", j.ast),
+      linhaStat("Roubos de bola", j.stl),
+      linhaStat("Tocos", j.blk),
+      linhaStat("Turnovers", j.to),
+      linhaStat("Faltas", j.faltas),
+      linhaStat("+/-", mm.texto, { classe: mm.classe })
+    )
+  );
+
+  return [secaoArremessos(), el("h3", null, "Estatísticas no jogo"), grupos];
+}
+
+/* --- estrutura do painel --- */
+
+function desenharCorpo() {
+  if (!dialogo || !corpoEl) return;
+  const itens = dialogo.contexto && dialogo.aba === "jogo" ? corpoJogo() : corpoTemporadaDoJogador();
+  corpoEl.replaceChildren(...itens);
+}
+
+function infoDoJogador() {
+  const { jogador, contexto } = dialogo;
+  const info = el("div", "jogador-info");
+  info.append(el("h2", null, jogador.nome));
+
+  const sub = el("p", "jogador-sub");
+  let nomeTime = jogador.time || "";
+  if (contexto) {
+    const time = boxAtual(contexto)[contexto.lado];
+    nomeTime = time.nome;
+    const logo = logoTime(time.time_id, "logo-mini");
+    if (logo) sub.append(logo);
+  }
+  const partes = [];
+  if (jogador.camisa) partes.push("#" + jogador.camisa);
+  if (jogador.posicao) partes.push(jogador.posicao);
+  if (nomeTime) partes.push(nomeTime);
+  sub.append(el("span", null, partes.join(" · ")));
+  info.append(sub);
+  return info;
+}
+
+function abasDoJogador() {
+  const seg = el("div", "segmentos");
+  for (const [chave, rotulo] of [["jogo", "Neste jogo"], ["temporada", "Temporada"]]) {
+    const botao = el("button", dialogo.aba === chave ? "ativo" : "", rotulo);
+    botao.addEventListener("click", () => {
+      dialogo.aba = chave;
+      desenharJogador();
+    });
+    seg.append(botao);
+  }
+  return seg;
+}
+
+// colegas de time em uma faixa horizontal, para trocar de jogador sem fechar o painel
+function faixaEquipe() {
+  const { contexto, jogador } = dialogo;
+  const time = boxAtual(contexto)[contexto.lado];
+  const faixa = el("div", "equipe-faixa");
+  chipAtivo = null;
+
+  for (const j of time.jogadores) {
+    const ativo = j.id === jogador.id;
+    const chip = el("button", ativo ? "chip-jogador ativo" : "chip-jogador");
+    chip.append(imagem(urlFoto(j.id, "260x190"), "foto-mini"), el("span", null, nomeCurto(j.nome)));
+    chip.addEventListener("click", () => trocarJogador(j));
+    faixa.append(chip);
+    if (ativo) chipAtivo = chip;
+  }
+  return faixa;
+}
+
+function desenharJogador() {
+  const { jogador, contexto } = dialogo;
+
+  const cabecalho = el("div", "jogador-cabecalho");
+  cabecalho.append(imagem(urlFoto(jogador.id), "foto", jogador.nome), infoDoJogador());
+
+  corpoEl = el("div", "jogador-corpo");
+  const partes = [cabecalho];
+  if (contexto) partes.push(abasDoJogador());
+  partes.push(corpoEl);
+  if (contexto) partes.push(faixaEquipe());
+
+  conteudoJogador.replaceChildren(...partes);
+  desenharCorpo();
+  if (chipAtivo) chipAtivo.scrollIntoView({ inline: "center", block: "nearest" });
+}
+
+function redesenharSeAtual(idJogador) {
+  if (dialogo && dialogo.jogador.id === idJogador) desenharCorpo();
+}
+
+async function carregarTemporada(jogador) {
+  if (cacheTemporada.has(jogador.id)) return;
+  falhas.delete("temporada:" + jogador.id);
+  try {
+    cacheTemporada.set(jogador.id, await buscar(`/jogadores/${jogador.id}`));
+  } catch {
+    falhas.add("temporada:" + jogador.id);
+  }
+  redesenharSeAtual(jogador.id);
+}
+
+async function carregarArremessos(jogador, jogo, forcar = false) {
+  const chave = `${jogo.id}:${jogador.id}`;
+  if (cacheArremessos.has(chave) && !forcar) return;
+  falhas.delete("arremessos:" + chave);
+  try {
+    const dados = await buscar(`/jogos/${jogo.id}/arremessos/${jogador.id}`);
+    cacheArremessos.set(chave, dados.arremessos);
+  } catch {
+    falhas.add("arremessos:" + chave);
+  }
+  redesenharSeAtual(jogador.id);
+}
+
+function carregarDadosDoPainel() {
+  const { jogador, contexto } = dialogo;
+  carregarTemporada(jogador);
+  if (contexto) carregarArremessos(jogador, contexto.jogo);
+}
+
+function trocarJogador(jogador) {
+  dialogo.jogador = jogador;
+  dialogo.periodo = "todos";
+  desenharJogador();
+  carregarDadosDoPainel();
+}
+
+function pararAtualizacaoDoPainel() {
+  if (temporizadorDialogo) clearInterval(temporizadorDialogo);
+  temporizadorDialogo = null;
+}
+
+// com o jogo em andamento, o painel também se atualiza (estatísticas e arremessos)
+function iniciarAtualizacaoDoPainel() {
+  pararAtualizacaoDoPainel();
+  if (!dialogo || !dialogo.contexto || dialogo.contexto.jogo.estado !== 2) return;
+
+  temporizadorDialogo = setInterval(async () => {
+    if (!dialogo || !dialogoJogador.open || document.hidden) return;
+    const { jogador, contexto } = dialogo;
+    try {
+      const box = await buscar(`/jogos/${contexto.jogo.id}/boxscore`);
+      ultimoBox.set(contexto.jogo.id, { box, estado: contexto.jogo.estado });
+      if (/^final/i.test(box.status || "")) pararAtualizacaoDoPainel();
+    } catch {
+      // mantém o que já está na tela
+    }
+    await carregarArremessos(jogador, contexto.jogo, true);
+  }, INTERVALO_AO_VIVO);
+}
+
+function abrirJogador(jogador, contexto) {
+  dialogo = {
+    jogador,
+    contexto: contexto || null,
+    aba: contexto ? "jogo" : "temporada",
+    periodo: "todos",
+  };
+  if (!dialogoJogador.open) dialogoJogador.showModal();
+  desenharJogador();
+  carregarDadosDoPainel();
+  iniciarAtualizacaoDoPainel();
 }
 
 document.getElementById("fechar-jogador").addEventListener("click", () => dialogoJogador.close());
@@ -562,7 +1020,10 @@ dialogoJogador.addEventListener("click", (e) => {
 });
 
 dialogoJogador.addEventListener("close", () => {
-  jogadorAberto = null;
+  dialogo = null;
+  corpoEl = null;
+  chipAtivo = null;
+  pararAtualizacaoDoPainel();
 });
 
 /* ---------- Abas ---------- */
@@ -600,7 +1061,7 @@ async function iniciar() {
   } catch {
     document
       .getElementById("jogos")
-      .replaceChildren(el("p", null, "Não foi possível carregar o calendário."));
+      .replaceChildren(el("p", "status", "Não foi possível carregar o calendário."));
     return;
   }
   atualizarBarra();

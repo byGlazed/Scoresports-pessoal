@@ -69,7 +69,18 @@ def jogos(data: str | None = None):
 
 @app.get("/jogos/{game_id}/boxscore")
 def boxscore(game_id: str):
-    return _obter(f"boxscore_v3:{game_id}", TTL_AO_VIVO, lambda: nba_dados.buscar_boxscore(game_id))
+    return _obter(f"boxscore_v4:{game_id}", TTL_AO_VIVO, lambda: nba_dados.buscar_boxscore(game_id))
+
+
+@app.get("/jogos/{game_id}/arremessos/{player_id}")
+def arremessos(game_id: str, player_id: int):
+    # um único play-by-play por jogo serve para todos os jogadores
+    todos = _obter(f"arremessos_v1:{game_id}", TTL_AO_VIVO, lambda: nba_dados.buscar_arremessos(game_id))
+    return {
+        "jogo": game_id,
+        "jogador": player_id,
+        "arremessos": [a for a in todos if a["jogador"] == player_id],
+    }
 
 
 @app.get("/jogadores/{player_id}")
