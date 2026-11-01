@@ -36,12 +36,21 @@ def _obter(chave, ttl, buscar):
         raise HTTPException(status_code=502, detail="Não foi possível obter dados da NBA agora.")
 
 
+def _opcional(chave, ttl, buscar):
+    """Como _obter, mas devolve None em caso de erro (usado onde uma falha não pode derrubar a tela)."""
+    try:
+        return cache.obter(chave, ttl, buscar)
+    except Exception:
+        logger.exception("Falha ao obter '%s'", chave)
+        return None
+
+
 def _hoje():
     return datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m-%d")
 
 
 def _calendario():
-    return _obter("calendario_v2", 600, nba_dados.buscar_calendario)
+    return _obter("calendario_v3", 600, nba_dados.buscar_calendario)
 
 
 def _ao_vivo():
@@ -81,6 +90,15 @@ def arremessos(game_id: str, player_id: int):
         "jogador": player_id,
         "arremessos": [a for a in todos if a["jogador"] == player_id],
     }
+
+
+@app.get("/jogos/{game_id}/pre-jogo")
+def pre_jogo(game_id: str):
+    agenda = _calendario()
+    jogo = next((j for j in agenda if j["id"] == game_id), None)
+    if jogo is None:
+        raise HTTPException(status_code=404, detail="Jogo não encontrado no calendário.")
+    return nba_dados.montar_pre_jogo(jogo, agenda, _opcional)
 
 
 @app.get("/jogadores/{player_id}")

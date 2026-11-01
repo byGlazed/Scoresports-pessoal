@@ -1,6 +1,9 @@
+import json
 import re
+import unicodedata
 from datetime import date, datetime, timezone
 from html import unescape
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 TEMPORADA = "2026-27"
@@ -625,4 +628,303 @@ def buscar_corridas():
     return {
         "mvp": _buscar_ladder(URL_LADDER_MVP, "kia-mvp-ladder"),
         "roy": _buscar_ladder(URL_LADDER_ROY, "kia-rookie-ladder"),
+    }
+
+
+# ---------- Pré-jogo: escalações prováveis, lesões, confronto direto, forma e líderes ----------
+
+ARQUIVO_TRANSMISSOES = Path(__file__).parent / "transmissoes.json"
+URL_LESOES = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+
+LIDERES_DO_TIME = [
+    ("PTS", "Pontos"),
+    ("REB", "Rebotes"),
+    ("AST", "Assistências"),
+    ("STL", "Roubos de bola"),
+    ("BLK", "Tocos"),
+    ("FG3M", "Bolas de três"),
+]
+
+
+def _sem_acento(texto):
+    normal = unicodedata.normalize("NFKD", texto or "")
+    return "".join(c for c in normal if not unicodedata.combining(c)).lower().strip()
+
+
+def chave_do_time(nome):
+    """'Golden State Warriors' -> 'warriors' (a última palavra identifica o time)."""
+    partes = _sem_acento(nome).split()
+    return partes[-1] if partes else ""
+
+
+def _minutos_decimais(valor):
+    m = re.match(r"PT(\d+)M(\d+(?:\.\d+)?)", valor or "")
+    return int(m.group(1)) + float(m.group(2)) / 60 if m else 0.0
+
+
+def buscar_lesoes():
+    """Relatório de lesões por time (fonte: ESPN, não oficial)."""
+    import requests
+
+    resp = requests.get(URL_LESOES, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp.raise_for_status()
+    por_time = {}
+    for t in resp.json().get("injuries", []):
+        lista = []
+        for i in t.get("injuries", []):
+            atleta = i.get("athlete") or {}
+            detalhes = i.get("details") or {}
+            motivo = " ".join(p for p in (detalhes.get("type"), detalhes.get("detail")) if p)
+            lista.append(
+                {
+                    "nome": atleta.get("displayName") or atleta.get("fullName") or "",
+                    "posicao": (atleta.get("position") or {}).get("abbreviation"),
+                    "status": i.get("status") or (i.get("type") or {}).get("description") or "",
+                    "motivo": motivo,
+                    "parte": detalhes.get("type") or "",
+                    "detalhe": detalhes.get("detail") or "",
+                    "retorno": detalhes.get("returnDate"),
+                }
+            )
+        por_time[chave_do_time(t.get("displayName"))] = lista
+    return por_time
+
+
+def nomes_indisponiveis(lesionados):
+    return {_sem_acento(l["nome"]) for l in lesionados if str(l.get("status", "")).lower() == "out"}
+
+
+def jogos_recentes(agenda, sigla, limite=5):
+    """Últimos jogos já encerrados de um time (do mais recente para o mais antigo)."""
+    jogos = [
+        j
+        for j in agenda
+        if j["estado"] == 3 and sigla in (j["fora"]["sigla"], j["casa"]["sigla"])
+    ]
+    jogos.sort(key=lambda j: j.get("inicio") or j["data"], reverse=True)
+    recentes = []
+    for j in jogos[:limite]:
+        em_casa = j["casa"]["sigla"] == sigla
+        meu, adversario = (j["casa"], j["fora"]) if em_casa else (j["fora"], j["casa"])
+        pontos, pontos_adv = _inteiro(meu["placar"]), _inteiro(adversario["placar"])
+        recentes.append(
+            {
+                "id": j["id"],
+                "data": j["data"],
+                "adversario": adversario["sigla"],
+                "local": "casa" if em_casa else "fora",
+                "pontos": pontos,
+                "pontos_adv": pontos_adv,
+                "resultado": "V" if pontos > pontos_adv else "D",
+            }
+        )
+    return recentes
+
+
+def buscar_titulares_do_jogo(game_id):
+    """Quem jogou em cada time num jogo encerrado, com a marcação de titular."""
+    from nba_api.live.nba.endpoints import boxscore
+
+    jogo = boxscore.BoxScore(game_id).get_dict()["game"]
+    resultado = {}
+    for chave in ("awayTeam", "homeTeam"):
+        time = jogo[chave]
+        jogadores = []
+        for p in time["players"]:
+            s = p.get("statistics") or {}
+            minutos = _minutos_decimais(s.get("minutes"))
+            if minutos <= 0:
+                continue  # não jogou
+            jogadores.append(
+                {
+                    "id": p["personId"],
+                    "nome": p["name"],
+                    "posicao": p.get("position"),
+                    "camisa": p.get("jerseyNum"),
+                    "min": round(minutos, 1),
+                    "titular": str(p.get("starter")) in ("1", "True", "true"),
+                }
+            )
+        resultado[time["teamTricode"]] = jogadores
+    return resultado
+
+
+def montar_escalacao(recentes, caixas, sigla, indisponiveis):
+    """Provável quinteto: quem mais começou jogando nos últimos jogos (sem os jogadores 'fora')."""
+    contagem = {}
+    jogos_base = 0
+    for j in recentes:
+        jogadores = (caixas.get(j["id"]) or {}).get(sigla)
+        if not jogadores:
+            continue
+        jogos_base += 1
+        for p in jogadores:
+            reg = contagem.setdefault(
+                p["id"],
+                {
+                    "id": p["id"],
+                    "nome": p["nome"],
+                    "posicao": p.get("posicao"),
+                    "camisa": p.get("camisa"),
+                    "titular_em": 0,
+                    "minutos": 0.0,
+                },
+            )
+            reg["minutos"] += p["min"]
+            if p["titular"]:
+                reg["titular_em"] += 1
+
+    candidatos = [r for r in contagem.values() if _sem_acento(r["nome"]) not in indisponiveis]
+    candidatos.sort(key=lambda r: (r["titular_em"], r["minutos"]), reverse=True)
+    quinteto = candidatos[:5]
+    for r in quinteto:
+        r["min_medio"] = round(r.pop("minutos") / jogos_base, 1)
+    return {
+        "jogos_base": jogos_base,
+        "criterio": "titulares" if any(r["titular_em"] for r in quinteto) else "minutos",
+        "quinteto": quinteto,
+    }
+
+
+def montar_lideres_do_time(jogadores, sigla):
+    """Maior média do time em cada estatística."""
+    do_time = [
+        j for j in jogadores if j.get("TEAM_ABBREVIATION") == sigla and _inteiro(j.get("GP")) > 0
+    ]
+    if not do_time:
+        return []
+    minimo_jogos = max(1, (7 * max(_inteiro(j.get("GP")) for j in do_time)) // 10)
+    candidatos = [j for j in do_time if _inteiro(j.get("GP")) >= minimo_jogos]
+
+    resultado = []
+    for chave, rotulo in LIDERES_DO_TIME:
+        melhor = max(candidatos, key=lambda j: _num(j.get(chave)) / _num(j.get("GP")))
+        resultado.append(
+            {
+                "chave": chave,
+                "rotulo": rotulo,
+                "id": _inteiro(melhor.get("PLAYER_ID")),
+                "nome": melhor.get("PLAYER_NAME") or "",
+                "valor": round(_num(melhor.get(chave)) / _num(melhor.get("GP")), 1),
+                "jogos": _inteiro(melhor.get("GP")),
+            }
+        )
+    return resultado
+
+
+def buscar_confronto_direto(id_a, id_b, sigla_a, sigla_b):
+    """Últimos 10 jogos entre os dois times (temporada regular e playoffs)."""
+    from nba_api.stats.endpoints import leaguegamefinder
+
+    desde = date.today().replace(year=date.today().year - 7, month=1, day=1)
+    df = leaguegamefinder.LeagueGameFinder(
+        team_id_nullable=id_a,
+        vs_team_id_nullable=id_b,
+        date_from_nullable=desde.strftime("%m/%d/%Y"),
+        timeout=45,
+    ).get_data_frames()[0]
+
+    linhas = [j for j in df.to_dict("records") if str(j.get("GAME_ID", ""))[:3] not in ("001", "003")]
+    linhas.sort(key=lambda j: str(j.get("GAME_DATE")), reverse=True)
+
+    jogos = []
+    for j in linhas[:10]:
+        pts_a = _inteiro(j.get("PTS"))
+        pts_b = int(round(pts_a - _num(j.get("PLUS_MINUS"))))
+        a_visitante = "@" in str(j.get("MATCHUP", ""))
+        jogos.append(
+            {
+                "data": str(j.get("GAME_DATE"))[:10],
+                "mandante": sigla_b if a_visitante else sigla_a,
+                "visitante": sigla_a if a_visitante else sigla_b,
+                "pontos_mandante": pts_b if a_visitante else pts_a,
+                "pontos_visitante": pts_a if a_visitante else pts_b,
+                "vencedor": sigla_a if j.get("WL") == "W" else sigla_b,
+            }
+        )
+    vitorias_a = sum(1 for g in jogos if g["vencedor"] == sigla_a)
+    return {"jogos": jogos, "vitorias_fora": vitorias_a, "vitorias_casa": len(jogos) - vitorias_a}
+
+
+def buscar_transmissao(data, fora, casa):
+    """Canais do jogo no Brasil, lidos do arquivo transmissoes.json (editável)."""
+    try:
+        conteudo = json.loads(ARQUIVO_TRANSMISSOES.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for item in conteudo.get("jogos", []):
+        if item.get("data") == data and item.get("fora") == fora and item.get("casa") == casa:
+            return {
+                "canais": list(item.get("canais") or []),
+                "conferido_em": item.get("conferido_em"),
+                "observacao": item.get("observacao"),
+            }
+    return None
+
+
+def _resumo_time(t):
+    return {"sigla": t["sigla"], "nome": t["nome"], "time_id": t.get("time_id")}
+
+
+def montar_pre_jogo(jogo, agenda, obter):
+    """Reúne tudo da tela de pré-jogo.
+
+    `obter(chave, ttl_segundos, funcao)` devolve o dado (usando o cache) ou None se falhar,
+    assim uma fonte fora do ar não derruba a página inteira.
+    """
+    fora, casa = jogo["fora"], jogo["casa"]
+    falhas = []
+
+    lesoes = obter("lesoes_v1", 1800, buscar_lesoes)
+    if lesoes is None:
+        falhas.append("lesoes")
+        lesoes = {}
+
+    estatisticas = obter("stats_jogadores_v1", 1800, buscar_stats_jogadores)
+    if estatisticas is None:
+        falhas.append("estatisticas")
+        estatisticas = []
+
+    confronto = None
+    if fora.get("time_id") and casa.get("time_id"):
+        confronto = obter(
+            f"h2h_v2:{fora['time_id']}:{casa['time_id']}",
+            43200,
+            lambda: buscar_confronto_direto(fora["time_id"], casa["time_id"], fora["sigla"], casa["sigla"]),
+        )
+    if confronto is None:
+        falhas.append("confronto")
+
+    times = {}
+    for lado, time in (("fora", fora), ("casa", casa)):
+        recentes = jogos_recentes(agenda, time["sigla"])
+        caixas = {}
+        for r in recentes:
+            caixa = obter(
+                f"titulares_v1:{r['id']}", 86400, lambda gid=r["id"]: buscar_titulares_do_jogo(gid)
+            )
+            if caixa:
+                caixas[r["id"]] = caixa
+        lesionados = lesoes.get(chave_do_time(time["nome"]), [])
+        times[lado] = {
+            "forma": recentes,
+            "escalacao": montar_escalacao(recentes, caixas, time["sigla"], nomes_indisponiveis(lesionados)),
+            "lesionados": lesionados,
+            "lideres": montar_lideres_do_time(estatisticas, time["sigla"]),
+        }
+
+    return {
+        "jogo": {
+            "id": jogo["id"],
+            "data": jogo["data"],
+            "inicio": jogo.get("inicio"),
+            "estado": jogo["estado"],
+            "status": jogo.get("status"),
+            "fora": _resumo_time(fora),
+            "casa": _resumo_time(casa),
+        },
+        "transmissao": buscar_transmissao(jogo["data"], fora["sigla"], casa["sigla"]),
+        "confronto": confronto,
+        "times": times,
+        "falhas": falhas,
     }

@@ -15,6 +15,8 @@ const timeEscolhido = new Map();   // id do jogo -> "fora" | "casa" (time exibid
 const cacheTemporada = new Map();  // id do jogador -> dados da temporada
 const cacheArremessos = new Map(); // "idJogo:idJogador" -> lista de arremessos
 const falhas = new Set();          // pedidos que deram erro (para mostrar a mensagem certa)
+const cachePreJogo = new Map();    // id do jogo -> { dados, em } (pré-jogo dos jogos que vão acontecer)
+const abaPreJogo = new Map();      // id do jogo -> aba escolhida no pré-jogo
 
 let datas = [];                    // dias que têm jogos
 let hoje = null;
@@ -100,9 +102,16 @@ function tabela(colunas, linhas) {
   return t;
 }
 
-// só cria link para endereços do NBA.com
-function linkNba(texto, url) {
-  if (typeof url === "string" && url.startsWith("https://www.nba.com/")) {
+// só cria link para endereços conhecidos (NBA.com, ESPN Brasil, Prime Video e YouTube)
+const PREFIXOS_LINK = [
+  "https://www.nba.com/",
+  "https://www.espn.com.br/",
+  "https://www.primevideo.com/",
+  "https://www.youtube.com/",
+];
+
+function linkSeguro(texto, url) {
+  if (typeof url === "string" && PREFIXOS_LINK.some((p) => url.startsWith(p))) {
     const a = el("a", null, texto);
     a.href = url;
     a.target = "_blank";
@@ -208,6 +217,359 @@ async function carregarBox(jogo, area) {
   }
 }
 
+/* ---------- Pré-jogo (jogos que ainda vão acontecer) ---------- */
+
+const VALIDADE_PRE_JOGO = 5 * 60 * 1000; // busca de novo depois de 5 minutos
+
+const ABAS_PRE_JOGO = [
+  ["assistir", "Onde assistir"],
+  ["escalacoes", "Escalações"],
+  ["confronto", "Confronto direto"],
+  ["medias", "Médias"],
+];
+
+const ESTATISTICAS_DO_TIME = [
+  ["PTS", "Pontos"],
+  ["REB", "Rebotes"],
+  ["AST", "Assistências"],
+  ["STL", "Roubos de bola"],
+  ["BLK", "Tocos"],
+  ["FG3M", "Bolas de três"],
+];
+
+const LINKS_PROGRAMACAO = [
+  ["ESPN Brasil", "https://www.espn.com.br/nba/"],
+  ["Prime Video", "https://www.primevideo.com/"],
+  ["YouTube da NBA Brasil", "https://www.youtube.com/results?search_query=NBA+Brasil+ao+vivo"],
+];
+
+const STATUS_LESAO = {
+  out: ["Fora", "negativo"],
+  "day-to-day": ["Dúvida", "alerta"],
+  questionable: ["Dúvida", "alerta"],
+  doubtful: ["Improvável", "negativo"],
+  probable: ["Provável", "positivo"],
+  available: ["Disponível", "positivo"],
+};
+
+// a fonte das lesões (ESPN) vem em inglês; traduzimos os termos mais comuns
+const TERMOS_LESAO = {
+  knee: "joelho", ankle: "tornozelo", foot: "pé", hip: "quadril", calf: "panturrilha",
+  shoulder: "ombro", wrist: "punho", thumb: "polegar", finger: "dedo", groin: "virilha",
+  back: "costas", hamstring: "posterior da coxa", achilles: "tendão de Aquiles",
+  quadricep: "quadríceps", quad: "quadríceps", hand: "mão", elbow: "cotovelo", toe: "dedo do pé",
+  neck: "pescoço", head: "cabeça", leg: "perna", rib: "costela", eye: "olho", nose: "nariz",
+  illness: "doença", rest: "descanso", concussion: "concussão", soreness: "dor",
+  sprain: "entorse", strain: "distensão", surgery: "cirurgia", fracture: "fratura",
+  tendinitis: "tendinite", contusion: "contusão", injury: "lesão", bruise: "hematoma",
+  "personal reasons": "motivos pessoais", "injury management": "controle de lesão",
+  "load management": "controle de carga", "g league": "G League",
+};
+
+function statusLesao(status) {
+  const chave = String(status || "").toLowerCase();
+  return STATUS_LESAO[chave] || [status || "Sem status", "alerta"];
+}
+
+function traduzirTermo(texto) {
+  const original = String(texto || "").trim();
+  return TERMOS_LESAO[original.toLowerCase()] || original;
+}
+
+function descreverLesao(l) {
+  const parte = traduzirTermo(l.parte);
+  const detalhe = traduzirTermo(l.detalhe);
+  if (parte && detalhe) return `${detalhe} (${parte})`;
+  return parte || detalhe || traduzirTermo(l.motivo);
+}
+
+function dataCurtaAno(iso) {
+  // '2026-10-23' -> '23/10/26'
+  return /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(2, 4)}` : iso;
+}
+
+function cabecalhoTime(time) {
+  const c = el("div", "pre-time");
+  const logo = logoTime(time.time_id, "logo-mini");
+  if (logo) c.append(logo);
+  c.append(el("strong", null, time.nome));
+  return c;
+}
+
+/* --- aba "Onde assistir" --- */
+
+function painelAssistir(dados) {
+  const painel = el("div", "pre-painel");
+  painel.append(el("h3", null, "Onde assistir no Brasil"));
+
+  const hora = dados.jogo.inicio ? horaBrasilia(dados.jogo.inicio) : null;
+  if (hora) {
+    painel.append(el("p", "info", `${dataBR(dados.jogo.data)} às ${hora} (horário de Brasília)`));
+  }
+
+  const t = dados.transmissao;
+  if (t && t.canais.length) {
+    const canais = el("div", "canais");
+    t.canais.forEach((c) => canais.append(el("span", "canal", c)));
+    painel.append(canais);
+    const nota = [];
+    if (t.conferido_em) nota.push(`Conferido em ${dataBR(t.conferido_em)}`);
+    if (t.observacao) nota.push(t.observacao);
+    if (nota.length) painel.append(el("p", "legenda", nota.join(" · ")));
+  } else {
+    painel.append(
+      el("p", "status", "O canal deste jogo ainda não está cadastrado no app. Confira a programação abaixo.")
+    );
+  }
+
+  painel.append(
+    el(
+      "p",
+      "info",
+      "O NBA League Pass (assinatura, pelo app da NBA ou pelo Prime Video) mostra todos os jogos. " +
+        "A ESPN 2, com o Disney+ Premium, e o Prime Video transmitem jogos selecionados, " +
+        "e o canal da NBA Brasil no YouTube exibe alguns jogos ao vivo."
+    )
+  );
+
+  const links = el("p", "links-programacao", "Conferir a programação: ");
+  LINKS_PROGRAMACAO.forEach(([texto, url]) => links.append(linkSeguro(texto, url)));
+  painel.append(links);
+  return painel;
+}
+
+/* --- aba "Escalações" (provável quinteto e lesionados) --- */
+
+function colunaEscalacao(dados, lado) {
+  const time = dados.jogo[lado];
+  const info = dados.times[lado];
+  const coluna = el("div", "pre-coluna");
+  coluna.append(cabecalhoTime(time));
+
+  coluna.append(el("h4", null, "Provável quinteto"));
+  const esc = info.escalacao;
+  if (!esc || esc.quinteto.length === 0) {
+    coluna.append(el("p", "status", "Ainda não há jogos suficientes para estimar o quinteto."));
+  } else {
+    const lista = el("div", "lista-jogadores");
+    for (const p of esc.quinteto) {
+      const linha = el("div", "linha-jogador");
+      const botao = el("button", "link-jogador", p.nome);
+      botao.addEventListener("click", () =>
+        abrirJogador({ id: p.id, nome: p.nome, time: time.nome, camisa: p.camisa, posicao: p.posicao })
+      );
+      linha.append(
+        el("span", "pos", p.posicao || "–"),
+        botao,
+        el(
+          "span",
+          "detalhe",
+          esc.criterio === "titulares" ? `titular em ${p.titular_em}/${esc.jogos_base}` : `${p.min_medio} min`
+        )
+      );
+      lista.append(linha);
+    }
+    coluna.append(
+      lista,
+      el(
+        "p",
+        "legenda",
+        esc.criterio === "titulares"
+          ? `Estimativa com base em quem mais começou jogando nos últimos ${esc.jogos_base} jogo(s), sem os jogadores marcados como fora.`
+          : `Estimativa com base em quem mais jogou nos últimos ${esc.jogos_base} jogo(s).`
+      )
+    );
+  }
+
+  coluna.append(el("h4", null, "Lesionados"));
+  if (dados.falhas.includes("lesoes")) {
+    coluna.append(el("p", "status", "A lista de lesões está indisponível agora."));
+  } else if (info.lesionados.length === 0) {
+    coluna.append(el("p", "status", "Nenhum jogador no relatório de lesões."));
+  } else {
+    const lista = el("div", "lista-lesoes");
+    for (const l of info.lesionados) {
+      const [rotulo, classe] = statusLesao(l.status);
+      const linha = el("div", "linha-lesao");
+      linha.append(el("span", "chip-status " + classe, rotulo), el("span", "nome-lesao", l.nome));
+      const partes = [descreverLesao(l)];
+      if (/^\d{4}-\d{2}-\d{2}/.test(l.retorno || "")) partes.push("retorno previsto " + dataBR(l.retorno.slice(0, 10)));
+      const texto = partes.filter(Boolean).join(" · ");
+      if (texto) linha.append(el("span", "detalhe", texto));
+      lista.append(linha);
+    }
+    coluna.append(lista, el("p", "legenda", "Fonte das lesões: ESPN (não oficial)."));
+  }
+  return coluna;
+}
+
+function painelEscalacoes(dados) {
+  const colunas = el("div", "pre-colunas");
+  colunas.append(colunaEscalacao(dados, "fora"), colunaEscalacao(dados, "casa"));
+  return colunas;
+}
+
+/* --- aba "Confronto direto" (e forma recente) --- */
+
+function blocoForma(time, forma) {
+  const bloco = el("div", "pre-coluna");
+  bloco.append(cabecalhoTime(time));
+  if (forma.length === 0) {
+    bloco.append(el("p", "status", "Ainda sem jogos nesta temporada."));
+    return bloco;
+  }
+
+  const selos = el("div", "forma");
+  [...forma].reverse().forEach((j) => {
+    const selo = el("span", j.resultado === "V" ? "v" : "d", j.resultado);
+    selo.title = `${dataCurta(j.data)} ${j.local === "casa" ? "vs" : "@"} ${j.adversario}: ${j.pontos}-${j.pontos_adv}`;
+    selos.append(selo);
+  });
+
+  const caixa = el("div", "box");
+  caixa.append(
+    tabela(
+      ["Data", "Jogo", "Placar"],
+      forma.map((j) => [
+        dataCurta(j.data),
+        `${j.local === "casa" ? "vs" : "@"} ${j.adversario}`,
+        { texto: `${j.pontos}-${j.pontos_adv}`, classe: j.resultado === "V" ? "positivo" : "negativo" },
+      ])
+    )
+  );
+  bloco.append(selos, caixa);
+  return bloco;
+}
+
+function painelConfronto(dados) {
+  const painel = el("div", "pre-painel");
+  painel.append(el("h3", null, "Últimos confrontos entre os times"));
+
+  const c = dados.confronto;
+  if (!c || c.jogos.length === 0) {
+    const texto = dados.falhas.includes("confronto")
+      ? "O confronto direto está indisponível agora."
+      : "Os times não se enfrentaram nos últimos anos.";
+    painel.append(el("p", "status", texto));
+  } else {
+    const { fora, casa } = dados.jogo;
+    painel.append(
+      el("p", "resumo-h2h", `${fora.sigla} ${c.vitorias_fora} × ${c.vitorias_casa} ${casa.sigla} nos últimos ${c.jogos.length} jogos`)
+    );
+    const caixa = el("div", "box");
+    caixa.append(
+      tabela(
+        ["Data", "Mandante", "Placar", "Visitante"],
+        c.jogos.map((g) => {
+          const mandanteVenceu = g.vencedor === g.mandante;
+          return [
+            dataCurtaAno(g.data),
+            { texto: g.mandante, classe: mandanteVenceu ? "forte" : "fraco" },
+            `${g.pontos_mandante} - ${g.pontos_visitante}`,
+            { texto: g.visitante, classe: mandanteVenceu ? "fraco" : "forte" },
+          ];
+        })
+      )
+    );
+    painel.append(caixa);
+  }
+
+  painel.append(el("h3", null, "Últimos jogos de cada time"));
+  const colunas = el("div", "pre-colunas");
+  colunas.append(blocoForma(dados.jogo.fora, dados.times.fora.forma), blocoForma(dados.jogo.casa, dados.times.casa.forma));
+  painel.append(colunas);
+  return painel;
+}
+
+/* --- aba "Médias" (maior média de cada time em cada estatística) --- */
+
+function ladoMedia(lider, sigla, classe) {
+  const lado = el("div", classe);
+  if (!lider) {
+    lado.append(el("span", "detalhe", "–"));
+    return lado;
+  }
+  const botao = el("button", "link-jogador", lider.nome);
+  botao.addEventListener("click", () => abrirJogador({ id: lider.id, nome: lider.nome, time: sigla }));
+  lado.append(botao, el("strong", null, lider.valor.toFixed(1)));
+  return lado;
+}
+
+function painelMedias(dados) {
+  const painel = el("div", "pre-painel");
+  painel.append(el("h3", null, "Maiores médias de cada time"));
+
+  const { fora, casa } = dados.jogo;
+  const lideresFora = dados.times.fora.lideres;
+  const lideresCasa = dados.times.casa.lideres;
+  if (lideresFora.length === 0 && lideresCasa.length === 0) {
+    const texto = dados.falhas.includes("estatisticas")
+      ? "As estatísticas estão indisponíveis agora."
+      : "Ainda não há estatísticas nesta temporada.";
+    painel.append(el("p", "status", texto));
+    return painel;
+  }
+
+  const cabecalho = el("div", "medias-linha cabecalho");
+  cabecalho.append(cabecalhoTime(fora), el("span"), cabecalhoTime(casa));
+  painel.append(cabecalho);
+
+  for (const [chave, rotulo] of ESTATISTICAS_DO_TIME) {
+    const linha = el("div", "medias-linha");
+    linha.append(
+      ladoMedia(lideresFora.find((l) => l.chave === chave), fora.sigla, "media-lado"),
+      el("span", "rotulo-media", rotulo),
+      ladoMedia(lideresCasa.find((l) => l.chave === chave), casa.sigla, "media-lado dir")
+    );
+    painel.append(linha);
+  }
+  painel.append(el("p", "legenda", "Médias por jogo na temporada. Só entram jogadores com pelo menos 70% dos jogos do time."));
+  return painel;
+}
+
+/* --- estrutura do pré-jogo --- */
+
+function mostrarPreJogo(dados, area, jogo) {
+  const atual = abaPreJogo.get(jogo.id) || "assistir";
+
+  const abas = el("div", "segmentos");
+  for (const [chave, rotulo] of ABAS_PRE_JOGO) {
+    const botao = el("button", chave === atual ? "ativo" : "", rotulo);
+    botao.addEventListener("click", () => {
+      abaPreJogo.set(jogo.id, chave);
+      mostrarPreJogo((cachePreJogo.get(jogo.id) || {}).dados || dados, area, jogo);
+    });
+    abas.append(botao);
+  }
+
+  const paineis = {
+    assistir: painelAssistir,
+    escalacoes: painelEscalacoes,
+    confronto: painelConfronto,
+    medias: painelMedias,
+  };
+  area.replaceChildren(abas, paineis[atual](dados));
+}
+
+async function carregarPreJogo(jogo, area) {
+  // mostra na hora o que já temos e só busca de novo depois de alguns minutos
+  const guardado = cachePreJogo.get(jogo.id);
+  if (guardado) {
+    mostrarPreJogo(guardado.dados, area, jogo);
+    if (Date.now() - guardado.em < VALIDADE_PRE_JOGO) return;
+  } else {
+    area.textContent = "Carregando o pré-jogo... (na primeira vez pode levar alguns segundos)";
+  }
+
+  try {
+    const dados = await buscar(`/jogos/${jogo.id}/pre-jogo`);
+    cachePreJogo.set(jogo.id, { dados, em: Date.now() });
+    mostrarPreJogo(dados, area, jogo);
+  } catch {
+    if (!guardado) area.textContent = "Não foi possível carregar o pré-jogo agora.";
+  }
+}
+
 /* ---------- Lista de jogos ---------- */
 
 function cartaoJogo(jogo) {
@@ -237,32 +599,32 @@ function cartaoJogo(jogo) {
     }
   }
 
-  // jogos que ainda não começaram não têm box score
-  if (jogo.estado >= 2) {
-    const botao = el("button", "detalhes", "Ver box score");
-    const area = el("div", "box");
-    area.hidden = true;
+  // jogo que ainda não começou mostra o pré-jogo; os demais mostram o box score
+  const preJogo = jogo.estado === 1;
+  const rotulo = preJogo ? "pré-jogo" : "box score";
+  const botao = el("button", "detalhes", "Ver " + rotulo);
+  const area = el("div", "box");
+  area.hidden = true;
 
-    async function alternar() {
-      if (area.hidden) {
-        area.hidden = false;
-        cartao.classList.add("aberto");
-        abertos.add(jogo.id);
-        botao.textContent = "Esconder box score";
-        await carregarBox(jogo, area);
-      } else {
-        area.hidden = true;
-        cartao.classList.remove("aberto");
-        abertos.delete(jogo.id);
-        botao.textContent = "Ver box score";
-      }
+  async function alternar() {
+    if (area.hidden) {
+      area.hidden = false;
+      cartao.classList.add("aberto");
+      abertos.add(jogo.id);
+      botao.textContent = "Esconder " + rotulo;
+      await (preJogo ? carregarPreJogo(jogo, area) : carregarBox(jogo, area));
+    } else {
+      area.hidden = true;
+      cartao.classList.remove("aberto");
+      abertos.delete(jogo.id);
+      botao.textContent = "Ver " + rotulo;
     }
-
-    botao.addEventListener("click", alternar);
-    cartao.append(botao, area);
-
-    if (abertos.has(jogo.id)) alternar(); // reabre após atualizar a lista
   }
+
+  botao.addEventListener("click", alternar);
+  cartao.append(botao, area);
+
+  if (abertos.has(jogo.id)) alternar(); // reabre após atualizar a lista
 
   return cartao;
 }
@@ -510,7 +872,7 @@ function cartaoCorrida(titulo, corrida) {
       )
     );
     const fonte = el("p", "fonte");
-    fonte.append(linkNba("Ver a página dos rankings no NBA.com", corrida.pagina));
+    fonte.append(linkSeguro("Ver a página dos rankings no NBA.com", corrida.pagina));
     cartao.append(fonte);
     return cartao;
   }
@@ -527,7 +889,7 @@ function cartaoCorrida(titulo, corrida) {
   cartao.append(caixa);
 
   const fonte = el("p", "fonte", "Ranking semanal do NBA.com · ");
-  fonte.append(linkNba("ler a análise completa", corrida.url));
+  fonte.append(linkSeguro("ler a análise completa", corrida.url));
   cartao.append(fonte);
   return cartao;
 }

@@ -1,0 +1,12 @@
+{
+  "_como_usar": "Cada item de 'jogos' vale para um jogo. 'data' é a data em Brasília (AAAA-MM-DD). 'fora' e 'casa' são as siglas dos times (visitante e mandante). 'canais' pode ter: ESPN 2, Disney+ Premium, Prime Video, NBA League Pass, YouTube NBA Brasil. 'conferido_em' e 'observacao' são opcionais. Salve o arquivo e atualize a página, não precisa reiniciar o servidor.",
+  "_exemplo": {
+    "data": "2026-11-04",
+    "fora": "NYK",
+    "casa": "BOS",
+    "canais": ["Prime Video"],
+    "conferido_em": "2026-11-01",
+    "observacao": ""
+  },
+  "jogos": []
+}
